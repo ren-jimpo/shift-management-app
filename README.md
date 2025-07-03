@@ -65,4 +65,9 @@ Webブラウザベースでインストール不要
 週表示または月表示を選び、空きマスをクリックしシフトを登録
 全体の人数過不足を色で確認し、必要に応じて調整
 シフトを「確定」して通知・計算を実行
-# shitf-manegement-app
+<<<<<<< HEAD
+# shift-management-app
+=======
+ more about Next.js, take a look at the following resources:
+
+>>>>>>> 1e7fea7 (Initial commit)
