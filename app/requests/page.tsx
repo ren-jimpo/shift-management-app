@@ -1,25 +1,213 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { mockUsers, mockTimeOffRequests, currentUser } from '@/lib/mockData';
+
+// APIから取得するデータ用の型
+interface ApiTimeOffRequest {
+  id: string;
+  user_id: string;
+  date: string;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  responded_at: string | null;
+  responded_by: string | null;
+  created_at: string;
+  users?: {
+    id: string;
+    name: string;
+    role: string;
+  };
+  responded_by_user?: {
+    id: string;
+    name: string;
+  };
+}
+
+// フロントエンド用の型変換後
+interface DisplayTimeOffRequest {
+  id: string;
+  userId: string;
+  userName: string;
+  date: string;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  respondedAt: string | null;
+  respondedBy: string | null;
+  createdAt: string;
+  respondedByName?: string;
+}
+
+// 仮の現在ユーザー（実際にはAuth0やFirebaseから取得）
+const CURRENT_USER_ID = 'current-manager-id';
 
 export default function RequestsPage() {
+  // データベースから取得するstate
+  const [requests, setRequests] = useState<DisplayTimeOffRequest[]>([]);
+  
+  // UI state
   const [selectedStatus, setSelectedStatus] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
 
+  // Loading and error states
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [processing, setProcessing] = useState<string | null>(null);
+
+  // データ取得関数
+  const fetchTimeOffRequests = async () => {
+    try {
+      // 全ての申請を取得（管理者権限）
+      const response = await fetch('/api/time-off-requests');
+      if (!response.ok) throw new Error('希望休申請データの取得に失敗しました');
+      const result = await response.json();
+      
+      // API response を DisplayTimeOffRequest 型に変換
+      const requestsData = result.data?.map((request: ApiTimeOffRequest) => ({
+        id: request.id,
+        userId: request.user_id,
+        userName: request.users?.name || '不明なユーザー',
+        date: request.date,
+        reason: request.reason,
+        status: request.status,
+        respondedAt: request.responded_at,
+        respondedBy: request.responded_by,
+        createdAt: request.created_at,
+        respondedByName: request.responded_by_user?.name
+      })) || [];
+      
+      return requestsData;
+    } catch (error) {
+      console.error('Error fetching time off requests:', error);
+      throw error;
+    }
+  };
+
+  // 初期データ読み込み
+  useEffect(() => {
+    const loadInitialData = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        const requestsData = await fetchTimeOffRequests();
+        setRequests(requestsData);
+        
+      } catch (error) {
+        setError(error instanceof Error ? error.message : '初期データの読み込みに失敗しました');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadInitialData();
+  }, []);
+
   // フィルタリング
-  const filteredRequests = mockTimeOffRequests.filter(request => {
-    const user = mockUsers.find(u => u.id === request.userId);
-    const matchesSearch = user?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+  const filteredRequests = requests.filter(request => {
+    const matchesSearch = request.userName.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          request.reason.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = selectedStatus === 'all' || request.status === selectedStatus;
     
     return matchesSearch && matchesStatus;
   });
+
+  // 承認処理
+  const handleApprove = async (requestId: string) => {
+    if (!confirm('この申請を承認してもよろしいですか？')) return;
+
+    setProcessing(requestId);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/time-off-requests', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: requestId,
+          status: 'approved',
+          responded_by: CURRENT_USER_ID
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '申請の承認に失敗しました');
+      }
+
+      const result = await response.json();
+      
+      // ローカル状態を更新
+      setRequests(requests.map(request => 
+        request.id === requestId 
+          ? {
+              ...request,
+              status: 'approved' as const,
+              respondedAt: result.data.responded_at,
+              respondedBy: result.data.responded_by,
+              respondedByName: result.data.responded_by_user?.name
+            }
+          : request
+      ));
+
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '申請の承認に失敗しました');
+    } finally {
+      setProcessing(null);
+    }
+  };
+
+  // 却下処理
+  const handleReject = async (requestId: string) => {
+    if (!confirm('この申請を却下してもよろしいですか？')) return;
+
+    setProcessing(requestId);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/time-off-requests', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: requestId,
+          status: 'rejected',
+          responded_by: CURRENT_USER_ID
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '申請の却下に失敗しました');
+      }
+
+      const result = await response.json();
+      
+      // ローカル状態を更新
+      setRequests(requests.map(request => 
+        request.id === requestId 
+          ? {
+              ...request,
+              status: 'rejected' as const,
+              respondedAt: result.data.responded_at,
+              respondedBy: result.data.responded_by,
+              respondedByName: result.data.responded_by_user?.name
+            }
+          : request
+      ));
+
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '申請の却下に失敗しました');
+    } finally {
+      setProcessing(null);
+    }
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -39,19 +227,49 @@ export default function RequestsPage() {
     }
   };
 
-  const handleApprove = (requestId: string) => {
-    console.log('承認:', requestId);
-    // 実際の実装ではAPIコールを行う
-  };
-
-  const handleReject = (requestId: string) => {
-    console.log('却下:', requestId);
-    // 実際の実装ではAPIコールを行う
-  };
+  // ローディング表示
+  if (loading) {
+    return (
+      <AuthenticatedLayout>
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <p className="text-gray-600">データを読み込んでいます...</p>
+          </div>
+        </div>
+      </AuthenticatedLayout>
+    );
+  }
 
   return (
     <AuthenticatedLayout>
       <div className="space-y-6">
+        {/* エラー表示バー */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+            <div className="flex">
+              <div className="flex-shrink-0">
+                <svg className="h-5 w-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="ml-3">
+                <p className="text-sm text-red-700">{error}</p>
+              </div>
+              <div className="ml-auto pl-3">
+                <button
+                  onClick={() => setError(null)}
+                  className="text-red-400 hover:text-red-600"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ヘッダー */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
@@ -65,7 +283,7 @@ export default function RequestsPage() {
           <Card>
             <CardContent className="pt-6">
               <div className="text-2xl font-bold text-yellow-600">
-                {mockTimeOffRequests.filter(r => r.status === 'pending').length}
+                {requests.filter(r => r.status === 'pending').length}
               </div>
               <p className="text-sm text-gray-500 mt-1">保留中</p>
             </CardContent>
@@ -73,7 +291,7 @@ export default function RequestsPage() {
           <Card>
             <CardContent className="pt-6">
               <div className="text-2xl font-bold text-green-600">
-                {mockTimeOffRequests.filter(r => r.status === 'approved').length}
+                {requests.filter(r => r.status === 'approved').length}
               </div>
               <p className="text-sm text-gray-500 mt-1">承認済み</p>
             </CardContent>
@@ -81,7 +299,7 @@ export default function RequestsPage() {
           <Card>
             <CardContent className="pt-6">
               <div className="text-2xl font-bold text-red-600">
-                {mockTimeOffRequests.filter(r => r.status === 'rejected').length}
+                {requests.filter(r => r.status === 'rejected').length}
               </div>
               <p className="text-sm text-gray-500 mt-1">却下済み</p>
             </CardContent>
@@ -100,6 +318,7 @@ export default function RequestsPage() {
                   placeholder="スタッフ名・理由で検索"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
+                  disabled={loading}
                 />
               </div>
               <div>
@@ -110,6 +329,7 @@ export default function RequestsPage() {
                   value={selectedStatus}
                   onChange={(e) => setSelectedStatus(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  disabled={loading}
                 >
                   <option value="all">すべて</option>
                   <option value="pending">保留中</option>
@@ -118,7 +338,7 @@ export default function RequestsPage() {
                 </select>
               </div>
               <div className="flex items-end">
-                <Button variant="secondary" fullWidth>
+                <Button variant="secondary" fullWidth disabled={loading}>
                   <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
@@ -135,21 +355,25 @@ export default function RequestsPage() {
             <CardTitle>申請一覧 ({filteredRequests.length}件)</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              {filteredRequests.map((request) => {
-                const user = mockUsers.find(u => u.id === request.userId);
-                const respondedBy = request.respondedBy ? mockUsers.find(u => u.id === request.respondedBy) : null;
-                
-                return (
+            {filteredRequests.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <svg className="w-12 h-12 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <p>条件に一致する申請が見つかりません</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {filteredRequests.map((request) => (
                   <div key={request.id} className="border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow">
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
                         <div className="flex items-center space-x-3 mb-2">
                           <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center text-white font-bold">
-                            {user?.name.charAt(0)}
+                            {request.userName.charAt(0)}
                           </div>
                           <div>
-                            <h3 className="text-lg font-semibold text-gray-900">{user?.name}</h3>
+                            <h3 className="text-lg font-semibold text-gray-900">{request.userName}</h3>
                             <p className="text-sm text-gray-500">
                               申請日時: {new Date(request.createdAt).toLocaleDateString('ja-JP', {
                                 year: 'numeric',
@@ -189,7 +413,7 @@ export default function RequestsPage() {
                         {request.status !== 'pending' && request.respondedAt && (
                           <div className="p-3 bg-gray-50 rounded-lg">
                             <p className="text-sm text-gray-600">
-                              <span className="font-medium">{respondedBy?.name}</span>により
+                              <span className="font-medium">{request.respondedByName || '管理者'}</span>により
                               {new Date(request.respondedAt).toLocaleDateString('ja-JP', {
                                 year: 'numeric',
                                 month: 'short',
@@ -203,35 +427,49 @@ export default function RequestsPage() {
                       </div>
 
                       {/* アクションボタン */}
-                      {request.status === 'pending' && currentUser.role === 'manager' && (
+                      {request.status === 'pending' && (
                         <div className="flex items-center space-x-2 ml-4">
                           <Button
                             size="sm"
                             onClick={() => handleApprove(request.id)}
                             className="bg-green-500 hover:bg-green-600"
+                            disabled={processing === request.id}
                           >
-                            <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                            承認
+                            {processing === request.id ? (
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                            ) : (
+                              <>
+                                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                                承認
+                              </>
+                            )}
                           </Button>
                           <Button
                             size="sm"
                             variant="destructive"
                             onClick={() => handleReject(request.id)}
+                            disabled={processing === request.id}
                           >
-                            <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                            却下
+                            {processing === request.id ? (
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                            ) : (
+                              <>
+                                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                却下
+                              </>
+                            )}
                           </Button>
                         </div>
                       )}
                     </div>
                   </div>
-                );
-              })}
-            </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

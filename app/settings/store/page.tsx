@@ -1,27 +1,246 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { mockStores, mockUsers } from '@/lib/mockData';
+
+// APIから取得するデータ用の型
+interface ApiStore {
+  id: string;
+  name: string;
+  required_staff: {
+    [day: string]: {
+      [timeSlot: string]: number;
+    };
+  };
+  user_stores?: Array<{
+    user_id: string;
+    is_flexible: boolean;
+    users: {
+      id: string;
+      name: string;
+      role: string;
+      skill_level: string;
+    };
+  }>;
+}
+
+interface ApiUser {
+  id: string;
+  name: string;
+  role: string;
+  skill_level: string;
+  user_stores?: Array<{
+    store_id: string;
+    stores: { id: string; name: string };
+  }>;
+}
+
+// フロントエンド用の型変換後
+interface DisplayStore {
+  id: string;
+  name: string;
+  requiredStaff: {
+    [day: string]: {
+      [timeSlot: string]: number;
+    };
+  };
+  flexibleStaff: string[];
+}
+
+interface DisplayUser {
+  id: string;
+  name: string;
+  role: string;
+  skillLevel: string;
+  stores: string[];
+}
 
 export default function StoreSettingsPage() {
-  const [selectedStore, setSelectedStore] = useState(mockStores[0].id);
+  // データベースから取得するstate
+  const [stores, setStores] = useState<DisplayStore[]>([]);
+  const [users, setUsers] = useState<DisplayUser[]>([]);
+  
+  // UI state
+  const [selectedStore, setSelectedStore] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
-  const currentStore = mockStores.find(store => store.id === selectedStore);
+  // Loading and error states
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // フォーム用state
+  const [requiredStaffData, setRequiredStaffData] = useState<{[day: string]: {[timeSlot: string]: number}}>({});
+  const [flexibleStaffData, setFlexibleStaffData] = useState<string[]>([]);
+
   const timeSlots = ['morning', 'lunch', 'evening'];
   const dayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
   const dayLabels = ['月', '火', '水', '木', '金', '土', '日'];
 
-  const handleSave = () => {
+  // データ取得関数
+  const fetchStores = async () => {
+    try {
+      const response = await fetch('/api/stores');
+      if (!response.ok) throw new Error('店舗データの取得に失敗しました');
+      const result = await response.json();
+      
+      // API response を DisplayStore 型に変換
+      const storesData = result.data?.map((store: ApiStore) => ({
+        id: store.id,
+        name: store.name,
+        requiredStaff: store.required_staff || {},
+        flexibleStaff: store.user_stores?.filter(us => us.is_flexible).map(us => us.user_id) || []
+      })) || [];
+      
+      return storesData;
+    } catch (error) {
+      console.error('Error fetching stores:', error);
+      throw error;
+    }
+  };
+
+  const fetchUsers = async () => {
+    try {
+      const response = await fetch('/api/users');
+      if (!response.ok) throw new Error('ユーザーデータの取得に失敗しました');
+      const result = await response.json();
+      
+      // API response を DisplayUser 型に変換
+      const usersData = result.data?.map((user: ApiUser) => ({
+        id: user.id,
+        name: user.name,
+        role: user.role,
+        skillLevel: user.skill_level,
+        stores: user.user_stores?.map(us => us.store_id) || []
+      })) || [];
+      
+      return usersData;
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      throw error;
+    }
+  };
+
+  // 初期データ読み込み
+  useEffect(() => {
+    const loadInitialData = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        const [storesData, usersData] = await Promise.all([
+          fetchStores(),
+          fetchUsers()
+        ]);
+        
+        setStores(storesData);
+        setUsers(usersData);
+        
+        // 最初の店舗を選択
+        if (storesData.length > 0) {
+          setSelectedStore(storesData[0].id);
+        }
+        
+      } catch (error) {
+        setError(error instanceof Error ? error.message : '初期データの読み込みに失敗しました');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadInitialData();
+  }, []);
+
+  // 選択された店舗が変更された時にフォームデータを更新
+  useEffect(() => {
+    const currentStore = stores.find(store => store.id === selectedStore);
+    if (currentStore) {
+      setRequiredStaffData(currentStore.requiredStaff);
+      setFlexibleStaffData(currentStore.flexibleStaff);
+    }
+  }, [selectedStore, stores]);
+
+  // 設定保存
+  const handleSave = async () => {
+    if (!selectedStore) return;
+
     setIsSaving(true);
-    setTimeout(() => {
-      setIsSaving(false);
+    setError(null);
+
+    try {
+      // 1. 必要人数設定の更新
+      const storeResponse = await fetch('/api/stores', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: selectedStore,
+          required_staff: requiredStaffData
+        }),
+      });
+
+      if (!storeResponse.ok) {
+        const errorData = await storeResponse.json();
+        throw new Error(errorData.error || '店舗設定の更新に失敗しました');
+      }
+
+      // 2. 応援スタッフ設定の更新（user_stores テーブルの is_flexible フラグを更新）
+      // まず現在の応援スタッフ設定をリセット
+      const resetResponse = await fetch('/api/user-stores/flexible', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          store_id: selectedStore,
+          flexible_users: flexibleStaffData
+        }),
+      });
+
+      if (!resetResponse.ok) {
+        console.warn('応援スタッフ設定の更新に一部失敗しました');
+      }
+
+      // ローカル状態を更新
+      setStores(stores.map(store => 
+        store.id === selectedStore 
+          ? {
+              ...store,
+              requiredStaff: requiredStaffData,
+              flexibleStaff: flexibleStaffData
+            }
+          : store
+      ));
+
       alert('設定を保存しました');
-    }, 1000);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '設定の保存に失敗しました');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // 必要人数の更新
+  const handleRequiredStaffChange = (day: string, timeSlot: string, value: number) => {
+    setRequiredStaffData(prev => ({
+      ...prev,
+      [day]: {
+        ...prev[day],
+        [timeSlot]: value
+      }
+    }));
+  };
+
+  // 応援スタッフの切り替え
+  const handleFlexibleStaffToggle = (userId: string, isFlexible: boolean) => {
+    if (isFlexible) {
+      setFlexibleStaffData(prev => [...prev, userId]);
+    } else {
+      setFlexibleStaffData(prev => prev.filter(id => id !== userId));
+    }
   };
 
   const getTimeSlotLabel = (slot: string) => {
@@ -33,17 +252,75 @@ export default function StoreSettingsPage() {
     }
   };
 
+  const getSkillLevelText = (level: string) => {
+    switch (level) {
+      case 'veteran': return 'ベテラン';
+      case 'regular': return '一般';
+      case 'training': return '研修中';
+      default: return '不明';
+    }
+  };
+
+  const currentStore = stores.find(store => store.id === selectedStore);
+
+  // ローディング表示
+  if (loading) {
+    return (
+      <AuthenticatedLayout>
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <p className="text-gray-600">データを読み込んでいます...</p>
+          </div>
+        </div>
+      </AuthenticatedLayout>
+    );
+  }
+
   return (
     <AuthenticatedLayout>
       <div className="space-y-6">
+        {/* エラー表示バー */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+            <div className="flex">
+              <div className="flex-shrink-0">
+                <svg className="h-5 w-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="ml-3">
+                <p className="text-sm text-red-700">{error}</p>
+              </div>
+              <div className="ml-auto pl-3">
+                <button
+                  onClick={() => setError(null)}
+                  className="text-red-400 hover:text-red-600"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ヘッダー */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">店舗設定</h1>
             <p className="text-gray-600 mt-2">各店舗の必要人数と応援可能スタッフを設定できます</p>
           </div>
-          <Button onClick={handleSave} disabled={isSaving}>
-            {isSaving ? '保存中...' : '設定を保存'}
+          <Button onClick={handleSave} disabled={isSaving || !selectedStore}>
+            {isSaving ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                保存中...
+              </>
+            ) : (
+              '設定を保存'
+            )}
           </Button>
         </div>
 
@@ -58,8 +335,9 @@ export default function StoreSettingsPage() {
                 value={selectedStore}
                 onChange={(e) => setSelectedStore(e.target.value)}
                 className="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={loading || isSaving}
               >
-                {mockStores.map(store => (
+                {stores.map(store => (
                   <option key={store.id} value={store.id}>{store.name}</option>
                 ))}
               </select>
@@ -94,15 +372,17 @@ export default function StoreSettingsPage() {
                             {getTimeSlotLabel(timeSlot)}
                           </td>
                           {dayNames.map((dayName, dayIndex) => {
-                            const currentValue = currentStore.requiredStaff[dayName]?.[timeSlot] || 0;
+                            const currentValue = requiredStaffData[dayName]?.[timeSlot] || 0;
                             return (
                               <td key={dayIndex} className="p-2 text-center">
                                 <Input
                                   type="number"
                                   min="0"
                                   max="10"
-                                  defaultValue={currentValue}
+                                  value={currentValue}
+                                  onChange={(e) => handleRequiredStaffChange(dayName, timeSlot, parseInt(e.target.value) || 0)}
                                   className="w-16 text-center"
+                                  disabled={isSaving}
                                 />
                               </td>
                             );
@@ -135,39 +415,47 @@ export default function StoreSettingsPage() {
                     他店舗から応援に来ることができるスタッフを選択してください
                   </p>
                   
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {mockUsers
-                      .filter(user => user.role === 'staff')
-                      .map((user) => {
-                        const isFlexible = currentStore.flexibleStaff.includes(user.id);
-                        const userStores = user.stores.map(storeId => {
-                          const store = mockStores.find(s => s.id === storeId);
-                          return store?.name;
-                        }).join(', ');
-                        
-                        return (
-                          <div key={user.id} className="flex items-center space-x-3 p-3 border border-gray-200 rounded-xl">
-                            <input
-                              type="checkbox"
-                              id={`flexible-${user.id}`}
-                              defaultChecked={isFlexible}
-                              className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
-                            />
-                            <div className="flex-1">
-                              <label htmlFor={`flexible-${user.id}`} className="font-medium text-gray-900 cursor-pointer">
-                                {user.name}
-                              </label>
-                              <div className="text-sm text-gray-500">
-                                所属: {userStores} | スキル: {
-                                  user.skillLevel === 'veteran' ? 'ベテラン' :
-                                  user.skillLevel === 'regular' ? '一般' : '研修中'
-                                }
+                  {users.filter(user => user.role === 'staff').length > 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {users
+                        .filter(user => user.role === 'staff')
+                        .map((user) => {
+                          const isFlexible = flexibleStaffData.includes(user.id);
+                          const userStores = user.stores.map(storeId => {
+                            const store = stores.find(s => s.id === storeId);
+                            return store?.name;
+                          }).filter(Boolean).join(', ');
+                          
+                          return (
+                            <div key={user.id} className="flex items-center space-x-3 p-3 border border-gray-200 rounded-xl">
+                              <input
+                                type="checkbox"
+                                id={`flexible-${user.id}`}
+                                checked={isFlexible}
+                                onChange={(e) => handleFlexibleStaffToggle(user.id, e.target.checked)}
+                                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+                                disabled={isSaving}
+                              />
+                              <div className="flex-1">
+                                <label htmlFor={`flexible-${user.id}`} className="font-medium text-gray-900 cursor-pointer">
+                                  {user.name}
+                                </label>
+                                <div className="text-sm text-gray-500">
+                                  所属: {userStores || '未設定'} | スキル: {getSkillLevelText(user.skillLevel)}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        );
-                      })}
-                  </div>
+                          );
+                        })}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      <svg className="w-12 h-12 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                      </svg>
+                      <p>スタッフが登録されていません</p>
+                    </div>
+                  )}
 
                   <div className="p-4 bg-green-50 rounded-xl">
                     <h4 className="font-medium text-green-900 mb-2">応援スタッフのメリット</h4>
@@ -175,58 +463,6 @@ export default function StoreSettingsPage() {
                       <li>• 急な欠員時に迅速な対応が可能になります</li>
                       <li>• 店舗間での人員調整がスムーズになります</li>
                       <li>• スタッフのスキル向上と経験拡大に貢献します</li>
-                    </ul>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* 固定シフト設定 */}
-            <Card>
-              <CardHeader>
-                <CardTitle>固定シフト設定</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  <p className="text-sm text-gray-600">
-                    特定のスタッフの固定勤務時間を設定できます（例：店長の固定出勤など）
-                  </p>
-
-                  <div className="space-y-3">
-                    <div className="flex items-center space-x-4 p-3 border border-gray-200 rounded-xl">
-                      <select className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                        <option value="">スタッフを選択</option>
-                        {mockUsers
-                          .filter(user => user.stores.includes(selectedStore))
-                          .map(user => (
-                            <option key={user.id} value={user.id}>{user.name}</option>
-                          ))}
-                      </select>
-                      
-                      <select className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                        <option value="">曜日を選択</option>
-                        {dayLabels.map((day, index) => (
-                          <option key={index} value={dayNames[index]}>{day}曜日</option>
-                        ))}
-                      </select>
-                      
-                      <select className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                        <option value="">時間帯を選択</option>
-                        {timeSlots.map(slot => (
-                          <option key={slot} value={slot}>{getTimeSlotLabel(slot)}</option>
-                        ))}
-                      </select>
-                      
-                      <Button size="sm">追加</Button>
-                    </div>
-                  </div>
-
-                  <div className="p-4 bg-yellow-50 rounded-xl">
-                    <h4 className="font-medium text-yellow-900 mb-2">固定シフトについて</h4>
-                    <ul className="text-sm text-yellow-800 space-y-1">
-                      <li>• 固定シフトは毎週自動的に配置されます</li>
-                      <li>• 希望休申請があった場合は手動調整が必要です</li>
-                      <li>• 店長などの責任者の固定出勤に適用します</li>
                     </ul>
                   </div>
                 </div>
