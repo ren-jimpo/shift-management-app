@@ -7,7 +7,33 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const storeId = searchParams.get('store_id');
     const role = searchParams.get('role');
+    const loginId = searchParams.get('login_id');
 
+    // login_idが指定されている場合は、そのユーザーのみを取得
+    if (loginId) {
+      let query = supabase
+        .from('users')
+        .select(`
+          *,
+          user_stores(
+            store_id,
+            is_flexible,
+            stores(id, name)
+          )
+        `)
+        .eq('login_id', loginId);
+
+      const { data, error } = await query;
+
+      if (error) {
+        console.error('Error fetching user by login_id:', error);
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      return NextResponse.json({ data }, { status: 200 });
+    }
+
+    // 通常のユーザー一覧取得
     let query = supabase
       .from('users')
       .select(`
@@ -99,6 +125,66 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // ログインID生成関数
+    const generateLoginId = async (role: 'manager' | 'staff', stores: string[]) => {
+      if (role === 'manager') {
+        // 既存の管理者数を取得
+        const { data: managers, error } = await supabase
+          .from('users')
+          .select('login_id')
+          .eq('role', 'manager')
+          .not('login_id', 'is', null);
+
+        if (error) {
+          console.error('Error fetching managers:', error);
+          return 'mgr-001'; // エラー時のデフォルト
+        }
+
+        const managerCount = managers?.length || 0;
+        return `mgr-${String(managerCount + 1).padStart(3, '0')}`;
+      } else {
+        // スタッフの場合は店舗ベースでID生成
+        if (!stores || stores.length === 0) {
+          return 'stf-001'; // 店舗なしの場合のデフォルト
+        }
+
+        // 最初の店舗を基準にID生成
+        const { data: storeData, error: storeError } = await supabase
+          .from('stores')
+          .select('id, name')
+          .eq('id', stores[0])
+          .single();
+
+        if (storeError || !storeData) {
+          return 'stf-001'; // エラー時のデフォルト
+        }
+
+        // 店舗名から接頭辞を生成
+        const storePrefix = storeData.name === '京橋店' ? 'kyb' :
+                           storeData.name === '天満店' ? 'ten' :
+                           storeData.name === '本町店' ? 'hon' : 'stf';
+
+        // 同じ店舗の既存スタッフ数を取得
+        const { data: existingStaff, error: staffError } = await supabase
+          .from('users')
+          .select('login_id, user_stores!inner(store_id)')
+          .eq('role', 'staff')
+          .eq('user_stores.store_id', stores[0])
+          .not('login_id', 'is', null);
+
+        if (staffError) {
+          console.error('Error fetching existing staff:', staffError);
+          return `${storePrefix}-001`; // エラー時のデフォルト
+        }
+
+        const staffCount = existingStaff?.length || 0;
+        return `${storePrefix}-${String(staffCount + 1).padStart(3, '0')}`;
+      }
+    };
+
+    // ログインIDを生成
+    const loginId = await generateLoginId(role, stores || []);
+
     // ユーザー作成
     const { data: user, error: userError } = await supabase
       .from('users')
@@ -108,7 +194,8 @@ export async function POST(request: NextRequest) {
         email: email.trim().toLowerCase(),
         role,
         skill_level,
-        memo: memo ? memo.trim() : null
+        memo: memo ? memo.trim() : null,
+        login_id: loginId
       })
       .select()
       .single();

@@ -16,6 +16,7 @@ interface ApiUser {
   role: 'manager' | 'staff';
   skill_level: 'training' | 'regular' | 'veteran';
   memo?: string;
+  login_id?: string;
   user_stores?: Array<{
     store_id: string;
     stores: { id: string; name: string };
@@ -36,6 +37,7 @@ interface DisplayUser {
   role: 'manager' | 'staff';
   skillLevel: 'training' | 'regular' | 'veteran';
   memo?: string;
+  loginId?: string;
   stores: string[];
 }
 
@@ -55,6 +57,10 @@ export default function StaffPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // ID生成用のstate
+  const [generatedLoginId, setGeneratedLoginId] = useState<string>('');
+  const [showLoginId, setShowLoginId] = useState(false);
 
   // フォーム用state
   const [formData, setFormData] = useState({
@@ -83,6 +89,7 @@ export default function StaffPage() {
         role: user.role,
         skillLevel: user.skill_level,
         memo: user.memo,
+        loginId: user.login_id,
         stores: user.user_stores?.map(us => us.store_id) || []
       })) || [];
       
@@ -140,6 +147,41 @@ export default function StaffPage() {
     return matchesSearch && matchesStore && matchesRole;
   });
 
+  // ログイン用ID生成関数
+  const generateLoginId = (name: string, stores: string[], role: 'manager' | 'staff') => {
+    if (!name) return '';
+    
+    // 店長の場合
+    if (role === 'manager') {
+      // 既存の店長数を取得して連番を生成
+      const existingManagerCount = users.filter(user => user.role === 'manager').length;
+      const nextNumber = String(existingManagerCount + 1).padStart(3, '0');
+      return `mgr-${nextNumber}`;
+    }
+    
+    // スタッフの場合
+    if (stores.length === 0) return '';
+    
+    // 店舗コードのマッピング
+    const storeCodeMap: { [key: string]: string } = {
+      'kyobashi': 'kyb',
+      'tenma': 'ten',
+      'honcho': 'hon'
+    };
+    
+    // メイン店舗（最初の店舗）のコードを取得
+    const mainStore = stores[0];
+    const storeCode = storeCodeMap[mainStore] || 'gen';
+    
+    // 該当店舗の既存スタッフ数を取得して連番を生成
+    const existingStaffCount = users.filter(user => 
+      user.role === 'staff' && user.stores.includes(mainStore)
+    ).length;
+    
+    const nextNumber = String(existingStaffCount + 1).padStart(3, '0');
+    return `${storeCode}-${nextNumber}`;
+  };
+
   // ユーザー作成・更新
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -172,6 +214,16 @@ export default function StaffPage() {
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error || `ユーザーの${editingUser ? '更新' : '作成'}に失敗しました`);
+      }
+
+      // 新規作成時にAPIから返されたログインIDを表示
+      if (!editingUser) {
+        const responseData = await response.json();
+        const createdUser = responseData.data;
+        if (createdUser && createdUser.login_id) {
+          setGeneratedLoginId(createdUser.login_id);
+          setShowLoginId(true);
+        }
       }
 
       // データを再取得して最新の状態に更新
@@ -238,6 +290,8 @@ export default function StaffPage() {
       memo: '',
       stores: []
     });
+    setShowLoginId(false);
+    setGeneratedLoginId('');
   };
 
   const getSkillLevelColor = (level: string) => {
@@ -449,6 +503,26 @@ export default function StaffPage() {
                               <span>📧 {user.email}</span>
                               <span>📞 {user.phone}</span>
                             </div>
+                            {/* ログイン用ID表示 */}
+                            <div className="flex items-center space-x-2">
+                              <span>🔑</span>
+                              <span className="font-mono text-blue-600 font-medium">
+                                {user.loginId || generateLoginId(user.name, user.stores, user.role)}
+                              </span>
+                              <button
+                                onClick={() => {
+                                  const loginId = user.loginId || generateLoginId(user.name, user.stores, user.role);
+                                  navigator.clipboard.writeText(loginId);
+                                  alert('ログイン用IDをクリップボードにコピーしました');
+                                }}
+                                className="text-gray-400 hover:text-gray-600 transition-colors"
+                                title="ログイン用IDをコピー"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                </svg>
+                              </button>
+                            </div>
                             <div className="flex items-center space-x-2">
                               <span>🏪</span>
                               <span>
@@ -652,6 +726,67 @@ export default function StaffPage() {
                     </Button>
                   </div>
                 </form>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ログイン用ID表示モーダル */}
+        {showLoginId && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+              <div className="text-center">
+                <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-green-100 mb-4">
+                  <svg className="h-6 w-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-medium text-gray-900 mb-2">
+                  スタッフ登録完了
+                </h3>
+                <p className="text-sm text-gray-600 mb-6">
+                  スタッフのログイン用IDが発行されました
+                </p>
+                
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                  <div className="text-sm text-blue-800 mb-2">ログイン用ID</div>
+                  <div className="text-2xl font-bold text-blue-900 tracking-wider">
+                    {generatedLoginId}
+                  </div>
+                  <div className="text-xs text-blue-600 mt-2">
+                    このIDでログインできます
+                  </div>
+                </div>
+
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-6">
+                  <div className="text-xs text-yellow-800">
+                    <div className="font-medium mb-1">重要な注意事項</div>
+                    <ul className="text-left space-y-1">
+                      <li>• このIDをスタッフに伝えてください</li>
+                      <li>• 初回ログイン時にパスワード設定が必要です</li>
+                      <li>• IDは後から変更できません</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="flex space-x-3">
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      navigator.clipboard.writeText(generatedLoginId);
+                      alert('ログイン用IDをクリップボードにコピーしました');
+                    }}
+                    className="flex-1"
+                  >
+                    IDをコピー
+                  </Button>
+                  <Button
+                    onClick={() => setShowLoginId(false)}
+                    className="flex-1"
+                  >
+                    確認
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

@@ -245,9 +245,9 @@ export default function StoreSettingsPage() {
 
   const getTimeSlotLabel = (slot: string) => {
     switch (slot) {
-      case 'morning': return 'モーニング (8:00-13:00)';
+      case 'morning': return 'モーニング (8:00-11:00)';
       case 'lunch': return 'ランチ (11:00-16:00)';
-      case 'evening': return 'イブニング (17:00-22:00)';
+      case 'evening': return 'イブニング (16:00-22:00)';
       default: return slot;
     }
   };

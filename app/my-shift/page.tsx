@@ -1,19 +1,106 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { 
-  mockUsers, 
-  mockStores, 
-  mockShiftPatterns,
-  mockShifts,
-  currentUser 
-} from '@/lib/mockData';
+
+// 型定義
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: 'manager' | 'staff';
+  loginId: string;
+  stores: string[];
+}
+
+interface Shift {
+  id: string;
+  date: string;
+  user_id: string;
+  store_id: string;
+  pattern_id: string;
+  status: 'draft' | 'confirmed' | 'completed';
+  stores?: { id: string; name: string };
+  shift_patterns?: {
+    id: string;
+    name: string;
+    start_time: string;
+    end_time: string;
+    color: string;
+    break_time?: number;
+  };
+}
 
 export default function MyShiftPage() {
-  const [selectedWeek, setSelectedWeek] = useState('2024-12-30');
+  const [selectedWeek, setSelectedWeek] = useState(() => {
+    // 今週の月曜日を取得
+    const today = new Date();
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - today.getDay() + 1);
+    return monday.toISOString().split('T')[0];
+  });
+  
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [myShifts, setMyShifts] = useState<Shift[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+
+  // 認証チェックとユーザー情報取得
+  useEffect(() => {
+    const userInfo = localStorage.getItem('currentUser');
+    if (!userInfo) {
+      router.push('/login');
+      return;
+    }
+
+    try {
+      const user = JSON.parse(userInfo);
+      setCurrentUser(user);
+    } catch (error) {
+      console.error('ユーザー情報の解析に失敗:', error);
+      router.push('/login');
+    }
+  }, [router]);
+
+  // シフトデータ取得
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const fetchMyShifts = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+
+        // 選択された週の日付範囲を計算
+        const weekStart = new Date(selectedWeek);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekStart.getDate() + 6);
+
+        const response = await fetch(
+          `/api/shifts?user_id=${currentUser.id}&date_from=${selectedWeek}&date_to=${weekEnd.toISOString().split('T')[0]}`
+        );
+
+        if (!response.ok) {
+          throw new Error('シフトデータの取得に失敗しました');
+        }
+
+        const result = await response.json();
+        setMyShifts(result.data || []);
+
+      } catch (error) {
+        console.error('シフトデータ取得エラー:', error);
+        setError(error instanceof Error ? error.message : 'データの読み込みに失敗しました');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchMyShifts();
+  }, [currentUser, selectedWeek]);
 
   // 週の日付を生成
   const getWeekDates = (startDate: string) => {
@@ -29,9 +116,6 @@ export default function MyShiftPage() {
 
   const weekDates = getWeekDates(selectedWeek);
 
-  // 自分のシフトのみフィルタリング
-  const myShifts = mockShifts.filter(shift => shift.userId === currentUser.id);
-
   // 特定の日のシフトを取得
   const getShiftForDate = (date: string) => {
     return myShifts.find(shift => shift.date === date);
@@ -43,21 +127,38 @@ export default function MyShiftPage() {
     weekDates.forEach(date => {
       const dateString = date.toISOString().split('T')[0];
       const shift = getShiftForDate(dateString);
-      if (shift) {
-        const pattern = mockShiftPatterns.find(p => p.id === shift.patternId);
-        if (pattern) {
-          const start = new Date(`2000-01-01T${pattern.startTime}`);
-          const end = new Date(`2000-01-01T${pattern.endTime}`);
-          const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-          const breakHours = (pattern.breakTime || 0) / 60;
-          totalHours += Math.max(0, hours - breakHours);
-        }
+      if (shift && shift.shift_patterns) {
+        const start = new Date(`2000-01-01T${shift.shift_patterns.start_time}`);
+        const end = new Date(`2000-01-01T${shift.shift_patterns.end_time}`);
+        const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+        const breakHours = (shift.shift_patterns.break_time || 30) / 60; // 分を時間に変換
+        totalHours += Math.max(0, hours - breakHours);
       }
     });
     return totalHours;
   };
 
   const weeklyHours = calculateWeeklyHours();
+
+  if (loading) {
+    return (
+      <AuthenticatedLayout>
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+        </div>
+      </AuthenticatedLayout>
+    );
+  }
+
+  if (error) {
+    return (
+      <AuthenticatedLayout>
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+          <p className="text-red-700">{error}</p>
+        </div>
+      </AuthenticatedLayout>
+    );
+  }
 
   return (
     <AuthenticatedLayout>
@@ -69,7 +170,9 @@ export default function MyShiftPage() {
             <p className="text-gray-600 mt-2">あなたの勤務スケジュールを確認できます</p>
           </div>
           <div className="flex gap-3">
-            <Button variant="secondary">希望休申請</Button>
+            <Button variant="secondary" onClick={() => router.push('/request-off')}>
+              希望休申請
+            </Button>
             <Button variant="secondary">PDF出力</Button>
           </div>
         </div>
@@ -80,7 +183,7 @@ export default function MyShiftPage() {
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
               <div className="flex-1">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  週選択
+                  週選択（月曜日開始）
                 </label>
                 <input
                   type="date"
@@ -96,7 +199,7 @@ export default function MyShiftPage() {
                 </div>
                 <div className="p-3 bg-green-50 rounded-lg">
                   <div className="text-2xl font-bold text-green-600">{myShifts.length}</div>
-                  <div className="text-sm text-green-700">今月の勤務日数</div>
+                  <div className="text-sm text-green-700">今週の勤務日数</div>
                 </div>
               </div>
             </div>
@@ -113,8 +216,8 @@ export default function MyShiftPage() {
               {weekDates.map((date, index) => {
                 const dateString = date.toISOString().split('T')[0];
                 const shift = getShiftForDate(dateString);
-                const pattern = shift ? mockShiftPatterns.find(p => p.id === shift.patternId) : null;
-                const store = shift ? mockStores.find(s => s.id === shift.storeId) : null;
+                const pattern = shift?.shift_patterns;
+                const store = shift?.stores;
                 const isToday = dateString === new Date().toISOString().split('T')[0];
 
                 return (
@@ -148,7 +251,7 @@ export default function MyShiftPage() {
                           {pattern.name}
                         </div>
                         <div className="text-center text-sm text-gray-600">
-                          {pattern.startTime} - {pattern.endTime}
+                          {pattern.start_time} - {pattern.end_time}
                         </div>
                         <div className="text-center text-xs text-gray-500">
                           {store.name}
@@ -177,79 +280,46 @@ export default function MyShiftPage() {
         {(() => {
           const today = new Date().toISOString().split('T')[0];
           const todayShift = getShiftForDate(today);
-          const todayPattern = todayShift ? mockShiftPatterns.find(p => p.id === todayShift.patternId) : null;
-          const todayStore = todayShift ? mockStores.find(s => s.id === todayShift.storeId) : null;
           
-          if (todayShift && todayPattern && todayStore) {
-            return (
-              <Card className="border-blue-200 bg-blue-50">
-                <CardHeader>
-                  <CardTitle className="text-blue-900">今日のシフト詳細</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div className="text-center">
-                      <div className="text-sm text-blue-600 mb-1">勤務時間</div>
-                      <div className="text-xl font-bold text-blue-900">
-                        {todayPattern.startTime} - {todayPattern.endTime}
+          if (!todayShift) return null;
+          
+          return (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center">
+                  <svg className="w-5 h-5 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  今日のシフト詳細
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="bg-blue-50 rounded-lg p-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <div className="text-sm text-gray-600">勤務時間</div>
+                      <div className="text-lg font-semibold text-gray-900">
+                        {todayShift.shift_patterns?.start_time} - {todayShift.shift_patterns?.end_time}
                       </div>
                     </div>
-                    <div className="text-center">
-                      <div className="text-sm text-blue-600 mb-1">勤務先</div>
-                      <div className="text-xl font-bold text-blue-900">{todayStore.name}</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-sm text-blue-600 mb-1">シフトタイプ</div>
-                      <div className="text-xl font-bold text-blue-900">{todayPattern.name}</div>
-                    </div>
-                  </div>
-                  
-                  {todayPattern.breakTime && (
-                    <div className="mt-4 p-3 bg-white rounded-lg">
-                      <div className="text-sm text-gray-600">
-                        <strong>休憩時間:</strong> {todayPattern.breakTime}分
+                    <div>
+                      <div className="text-sm text-gray-600">勤務先</div>
+                      <div className="text-lg font-semibold text-gray-900">
+                        {todayShift.stores?.name}
                       </div>
                     </div>
-                  )}
-                  
-                  {todayShift.notes && (
-                    <div className="mt-4 p-3 bg-white rounded-lg">
-                      <div className="text-sm text-gray-600">
-                        <strong>メモ:</strong> {todayShift.notes}
+                    <div>
+                      <div className="text-sm text-gray-600">シフト</div>
+                      <div className="text-lg font-semibold text-gray-900">
+                        {todayShift.shift_patterns?.name}
                       </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          }
-          return null;
-        })()}
-
-        {/* シフトパターン凡例 */}
-        <Card>
-          <CardHeader>
-            <CardTitle>シフトパターン</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-              {mockShiftPatterns.map((pattern) => (
-                <div key={pattern.id} className="flex items-center space-x-3 p-3 border border-gray-200 rounded-lg">
-                  <div
-                    className="w-4 h-4 rounded"
-                    style={{ backgroundColor: pattern.color }}
-                  ></div>
-                  <div>
-                    <div className="text-sm font-medium text-gray-900">{pattern.name}</div>
-                    <div className="text-xs text-gray-500">
-                      {pattern.startTime} - {pattern.endTime}
                     </div>
                   </div>
                 </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+              </CardContent>
+            </Card>
+          );
+        })()}
       </div>
     </AuthenticatedLayout>
   );

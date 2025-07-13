@@ -224,9 +224,9 @@ export default function ShiftCreatePage() {
   const selectedStoreData = stores.find(store => store.id === selectedStore);
 
   const timeSlots = [
-    { id: 'morning', name: 'モーニング', time: '8:00-13:00' },
+    { id: 'morning', name: 'モーニング', time: '8:00-11:00' },
     { id: 'lunch', name: 'ランチ', time: '11:00-16:00' },
-    { id: 'evening', name: 'イブニング', time: '17:00-22:00' },
+    { id: 'evening', name: 'イブニング', time: '16:00-22:00' },
   ];
 
   // 必要人数を取得
@@ -272,9 +272,9 @@ export default function ShiftCreatePage() {
         }
 
         const slotTimeRanges = {
-          morning: { start: [8, 0], end: [13, 0] },
+          morning: { start: [8, 0], end: [11, 0] },
           lunch: { start: [11, 0], end: [16, 0] },
-          evening: { start: [17, 0], end: [22, 0] }
+          evening: { start: [16, 0], end: [22, 0] }
         };
 
         const range = slotTimeRanges[timeSlot as keyof typeof slotTimeRanges];
