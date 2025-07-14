@@ -279,6 +279,18 @@ export const emergencyRequestApi = {
     });
   },
 
+  // 代打応募者承認（シフト表自動更新）
+  processVolunteer: (volunteerData: {
+    emergency_request_id: string;
+    volunteer_id: string;
+    action: 'accept' | 'reject';
+  }) => {
+    return apiRequest('/emergency-requests', {
+      method: 'PATCH',
+      body: JSON.stringify(volunteerData),
+    });
+  },
+
   // 代打募集削除
   delete: (id: string) => {
     return apiRequest(`/emergency-requests?id=${id}`, {

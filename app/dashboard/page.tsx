@@ -54,7 +54,23 @@ interface EmergencyRequest {
   original_user_id: string;
   store_id: string;
   date: string;
+  reason: string;
   status: 'open' | 'filled' | 'cancelled';
+  created_at: string;
+  original_user?: User;
+  stores?: Store;
+  shift_patterns?: {
+    id: string;
+    name: string;
+    start_time: string;
+    end_time: string;
+  };
+  emergency_volunteers?: {
+    id: string;
+    user_id: string;
+    responded_at: string;
+    users?: User;
+  }[];
 }
 
 export default function DashboardPage() {
@@ -93,7 +109,8 @@ export default function DashboardPage() {
           storeApi.getAll(),
           shiftApi.getAll({ 
             date_from: today, 
-            date_to: today 
+            date_to: today,
+            status: 'confirmed' // 確定済みシフトのみ取得
           }),
           timeOffRequestApi.getAll({ 
             status: 'pending' 
@@ -155,21 +172,32 @@ export default function DashboardPage() {
     setIsProcessing(requestId);
     
     try {
-      // TODO: 現在のユーザーIDを取得する仕組みが必要
-      const currentUserId = users.find(u => u.role === 'manager')?.id || users[0]?.id;
+      // localStorageから現在のユーザー情報を取得
+      const userData = localStorage.getItem('currentUser');
+      if (!userData) {
+        throw new Error('ユーザー認証が必要です');
+      }
       
-      if (!currentUserId) {
-        throw new Error('承認ユーザーが見つかりません');
+      const currentUser = JSON.parse(userData);
+      if (currentUser.role !== 'manager') {
+        throw new Error('管理者権限が必要です');
       }
 
-      const result = await timeOffRequestApi.respond({
-        id: requestId,
-        status: action === 'approve' ? 'approved' : 'rejected',
-        responded_by: currentUserId
+      const response = await fetch('/api/time-off-requests', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: requestId,
+          status: action === 'approve' ? 'approved' : 'rejected',
+          responded_by: currentUser.id
+        }),
       });
 
-      if (result.error) {
-        throw new Error(result.error);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '申請の処理に失敗しました');
       }
 
       // ローカル状態を更新
@@ -179,6 +207,70 @@ export default function DashboardPage() {
 
     } catch (err) {
       console.error('Request action failed:', err);
+      alert(err instanceof Error ? err.message : '処理に失敗しました');
+    } finally {
+      setIsProcessing(null);
+    }
+  };
+
+  // 代打応募者の採用・却下処理
+  const handleVolunteerAction = async (requestId: string, volunteerId: string, action: 'accept' | 'reject') => {
+    setIsProcessing(volunteerId);
+    
+    try {
+      // 新しいPATCHエンドポイントを使用してシフト表も自動更新
+      const response = await fetch('/api/emergency-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          emergency_request_id: requestId,
+          volunteer_id: volunteerId,
+          action: action
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `代打の${action === 'accept' ? '確定' : '削除'}に失敗しました`);
+      }
+
+      const result = await response.json();
+
+      if (action === 'accept') {
+        // 代打確定時の処理
+        const volunteerName = result.data.volunteer?.users?.name || '代打スタッフ';
+        const originalUserName = result.data.emergency_request?.original_user?.name || '元の担当者';
+        
+        // ローカル状態を更新
+        setEmergencyRequests(prev => 
+          prev.map(request => 
+            request.id === requestId 
+              ? { ...request, status: 'filled' as const }
+              : request
+          )
+        );
+
+        alert(`代打を確定しました。\n${originalUserName} → ${volunteerName}\nシフト表が自動更新されました。`);
+      } else {
+        // 応募者削除時の処理
+        setEmergencyRequests(prev => 
+          prev.map(request => 
+            request.id === requestId 
+              ? {
+                  ...request,
+                  emergency_volunteers: request.emergency_volunteers?.filter(v => v.id !== volunteerId)
+                }
+              : request
+          )
+        );
+
+        alert('応募者を削除しました');
+      }
+
+    } catch (err) {
+      console.error('Volunteer action failed:', err);
       alert(err instanceof Error ? err.message : '処理に失敗しました');
     } finally {
       setIsProcessing(null);
@@ -274,7 +366,7 @@ export default function DashboardPage() {
           {/* 代打募集 */}
           <Card 
             className="cursor-pointer hover:shadow-md transition-shadow"
-            onClick={() => alert('代打募集機能は今後実装予定です')}
+            onClick={() => navigateTo('/shift/create')}
           >
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-medium text-gray-600">代打募集</CardTitle>
@@ -312,7 +404,7 @@ export default function DashboardPage() {
           </Card>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* 今日の店舗別出勤状況 */}
           <Card>
             <CardHeader>
@@ -423,6 +515,117 @@ export default function DashboardPage() {
                         onClick={() => navigateTo('/requests')}
                       >
                         他 {timeOffRequests.length - 3} 件の申請を見る
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* 代打応募者管理 */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle>代打応募者管理</CardTitle>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => navigateTo('/shift/create')}
+                >
+                  すべて見る
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {emergencyRequests.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  <p>現在、代打募集はありません</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {emergencyRequests.slice(0, 2).map((request) => (
+                    <div key={request.id} className="border border-gray-200 rounded-lg p-4">
+                      <div className="mb-3">
+                        <div className="flex items-center justify-between">
+                          <p className="font-medium text-gray-900">
+                            {request.stores?.name || '不明な店舗'}
+                          </p>
+                          <span className={`px-2 py-1 text-xs rounded-full ${
+                            request.status === 'open' 
+                              ? 'bg-red-100 text-red-600' 
+                              : 'bg-green-100 text-green-600'
+                          }`}>
+                            {request.status === 'open' ? '募集中' : '確定済み'}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-600 mt-1">
+                          {new Date(request.date).toLocaleDateString('ja-JP')} - {request.reason}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">
+                          元担当: {request.original_user?.name || '不明'}
+                        </p>
+                      </div>
+                      
+                      {/* 応募者リスト */}
+                      {request.emergency_volunteers && request.emergency_volunteers.length > 0 ? (
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-gray-700">応募者 ({request.emergency_volunteers.length}名)</p>
+                          {request.emergency_volunteers.slice(0, 2).map((volunteer) => (
+                            <div key={volunteer.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+                              <div className="flex-1">
+                                <p className="text-sm font-medium text-gray-900">
+                                  {volunteer.users?.name || '不明なユーザー'}
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                  応募日: {new Date(volunteer.responded_at).toLocaleDateString('ja-JP')}
+                                </p>
+                              </div>
+                              {request.status === 'open' && (
+                                <div className="flex space-x-1">
+                                  <Button
+                                    size="sm"
+                                    onClick={() => handleVolunteerAction(request.id, volunteer.id, 'accept')}
+                                    disabled={isProcessing === volunteer.id}
+                                    className="bg-green-600 hover:bg-green-700 text-xs px-2 py-1"
+                                  >
+                                    {isProcessing === volunteer.id ? '処理中...' : '採用'}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleVolunteerAction(request.id, volunteer.id, 'reject')}
+                                    disabled={isProcessing === volunteer.id}
+                                    className="border-red-300 text-red-600 hover:bg-red-50 text-xs px-2 py-1"
+                                  >
+                                    {isProcessing === volunteer.id ? '処理中...' : '削除'}
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                          {request.emergency_volunteers.length > 2 && (
+                            <p className="text-xs text-gray-500 text-center">
+                              他 {request.emergency_volunteers.length - 2} 名の応募者
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="text-center py-4 text-gray-500">
+                          <p className="text-sm">まだ応募者がいません</p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  
+                  {emergencyRequests.length > 2 && (
+                    <div className="text-center pt-4 border-t border-gray-200">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => navigateTo('/shift/create')}
+                      >
+                        他 {emergencyRequests.length - 2} 件の代打募集を見る
                       </Button>
                     </div>
                   )}

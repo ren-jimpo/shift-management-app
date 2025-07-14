@@ -4,8 +4,7 @@ import { useState, useEffect } from 'react';
 import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
-import type { Shift, User, ShiftPattern, Store } from '@/lib/types';
+import type { Shift, ShiftPattern } from '@/lib/types';
 
 interface ShiftModalData {
   date: string;
@@ -34,19 +33,75 @@ interface ApiStore {
       [timeSlot: string]: number;
     };
   };
+  workRules?: {
+    maxWeeklyHours: number;
+    maxConsecutiveDays: number;
+    minRestHours: number;
+  };
   flexibleStaff: string[];
 }
 
+interface TimeOffRequest {
+  id: string;
+  userId: string;
+  date: string;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  respondedAt: string | null;
+  respondedBy: string | null;
+  createdAt: string;
+}
+
 export default function ShiftCreatePage() {
+  // 今週の月曜日を取得する関数
+  const getCurrentWeekMonday = () => {
+    const today = new Date();
+    const dayOfWeek = today.getDay(); // 0=日曜日, 1=月曜日, ...
+    const monday = new Date(today);
+    
+    // 月曜日を0として計算（日曜日の場合は前週の月曜日）
+    const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    monday.setDate(today.getDate() + daysToMonday);
+    
+    return monday.toISOString().split('T')[0];
+  };
+
+  // 表示期間モードに応じた適切な開始日を取得
+  const getAppropriateStartDate = (mode: 'week' | 'half-month' | 'month') => {
+    const today = new Date();
+    
+    switch (mode) {
+      case 'week':
+        return getCurrentWeekMonday();
+      case 'half-month':
+        // 今月の1日または15日のうち、今日に近い方
+        const currentDate = today.getDate();
+        const firstHalf = new Date(today.getFullYear(), today.getMonth(), 1);
+        const secondHalf = new Date(today.getFullYear(), today.getMonth(), 15);
+        
+        return currentDate < 15 
+          ? firstHalf.toISOString().split('T')[0]
+          : secondHalf.toISOString().split('T')[0];
+      case 'month':
+        // 今月の1日
+        const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        return monthStart.toISOString().split('T')[0];
+      default:
+        return getCurrentWeekMonday();
+    }
+  };
+
   // データベースから取得するstate
   const [stores, setStores] = useState<ApiStore[]>([]);
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [shiftPatterns, setShiftPatterns] = useState<ShiftPattern[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
+  const [approvedTimeOffRequests, setApprovedTimeOffRequests] = useState<TimeOffRequest[]>([]);
   
   // UI state
   const [selectedStore, setSelectedStore] = useState('');
-  const [selectedWeek, setSelectedWeek] = useState('2024-12-30'); // 今週
+  const [selectedWeek, setSelectedWeek] = useState(() => getCurrentWeekMonday()); // 今週の月曜日
+  const [viewMode, setViewMode] = useState<'week' | 'half-month' | 'month'>('week'); // 表示期間モード
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalData, setModalData] = useState<ShiftModalData | null>(null);
   const [selectedUser, setSelectedUser] = useState('');
@@ -56,6 +111,22 @@ export default function ShiftCreatePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // 代打募集関連のstate
+  const [emergencyRequests, setEmergencyRequests] = useState<any[]>([]);
+  const [contextMenu, setContextMenu] = useState<{
+    show: boolean;
+    x: number;
+    y: number;
+    shiftId: string;
+    shift: any;
+  }>({ show: false, x: 0, y: 0, shiftId: '', shift: null });
+  const [emergencyModal, setEmergencyModal] = useState<{
+    show: boolean;
+    shift: any;
+  }>({ show: false, shift: null });
+  const [emergencyReason, setEmergencyReason] = useState('');
+  const [submittingEmergency, setSubmittingEmergency] = useState(false);
 
   // データ取得関数
   const fetchStores = async () => {
@@ -127,13 +198,16 @@ export default function ShiftCreatePage() {
     }
   };
 
-  const fetchShifts = async (storeId: string, weekStart: string) => {
+  const fetchShifts = async (storeId: string, startDate: string, endDate?: string) => {
     try {
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekEnd.getDate() + 6);
+      const actualEndDate = endDate || (() => {
+        const weekEnd = new Date(startDate);
+        weekEnd.setDate(weekEnd.getDate() + 6);
+        return weekEnd.toISOString().split('T')[0];
+      })();
       
       const response = await fetch(
-        `/api/shifts?storeId=${storeId}&startDate=${weekStart}&endDate=${weekEnd.toISOString().split('T')[0]}`
+        `/api/shifts?storeId=${storeId}&startDate=${startDate}&endDate=${actualEndDate}`
       );
       if (!response.ok) throw new Error('シフトデータの取得に失敗しました');
       const result = await response.json();
@@ -153,6 +227,63 @@ export default function ShiftCreatePage() {
     } catch (error) {
       console.error('Error fetching shifts:', error);
       throw error;
+    }
+  };
+
+  // 承認された希望休申請を取得
+  const fetchApprovedTimeOffRequests = async (startDate: string, endDate?: string) => {
+    try {
+      const params = new URLSearchParams({
+        status: 'approved',
+        date_from: startDate,
+      });
+      
+      if (endDate) {
+        params.set('date_to', endDate);
+      }
+      
+      const response = await fetch(`/api/time-off-requests?${params.toString()}`);
+      if (!response.ok) throw new Error('希望休申請データの取得に失敗しました');
+      const result = await response.json();
+      
+      // API responseをTimeOffRequest型に変換
+      const timeOffData = result.data?.map((request: any) => ({
+        id: request.id,
+        userId: request.user_id,
+        date: request.date,
+        reason: request.reason,
+        status: request.status,
+        respondedAt: request.responded_at,
+        respondedBy: request.responded_by,
+        createdAt: request.created_at
+      })) || [];
+      
+      return timeOffData;
+    } catch (error) {
+      console.error('Error fetching time off requests:', error);
+      throw error;
+    }
+  };
+
+  // 代打募集データを取得
+  const fetchEmergencyRequests = async (storeId: string, startDate: string, endDate?: string) => {
+    try {
+      const actualEndDate = endDate || (() => {
+        const weekEnd = new Date(startDate);
+        weekEnd.setDate(weekEnd.getDate() + 6);
+        return weekEnd.toISOString().split('T')[0];
+      })();
+      
+      const response = await fetch(
+        `/api/emergency-requests?store_id=${storeId}&date_from=${startDate}&date_to=${actualEndDate}`
+      );
+      if (!response.ok) throw new Error('代打募集データの取得に失敗しました');
+      const result = await response.json();
+      
+      return result.data || [];
+    } catch (error) {
+      console.error('Error fetching emergency requests:', error);
+      return [];
     }
   };
 
@@ -194,8 +325,34 @@ export default function ShiftCreatePage() {
       const loadShifts = async () => {
         try {
           setError(null); // 前のエラーをクリア
-          const shiftsData = await fetchShifts(selectedStore, selectedWeek);
+          
+          // 表示期間に応じて取得範囲を決定
+          const startDate = selectedWeek;
+          let endDate = selectedWeek;
+          
+          if (viewMode === 'week') {
+            const end = new Date(selectedWeek);
+            end.setDate(end.getDate() + 6);
+            endDate = end.toISOString().split('T')[0];
+          } else if (viewMode === 'half-month') {
+            const end = new Date(selectedWeek);
+            end.setDate(end.getDate() + 13);
+            endDate = end.toISOString().split('T')[0];
+          } else if (viewMode === 'month') {
+            const start = new Date(selectedWeek);
+            start.setDate(1);
+            const end = new Date(start.getFullYear(), start.getMonth() + 1, 0);
+            endDate = end.toISOString().split('T')[0];
+          }
+          
+          const [shiftsData, timeOffData, emergencyData] = await Promise.all([
+            fetchShifts(selectedStore, startDate, endDate),
+            fetchApprovedTimeOffRequests(startDate, endDate),
+            fetchEmergencyRequests(selectedStore, startDate, endDate)
+          ]);
           setShifts(shiftsData);
+          setApprovedTimeOffRequests(timeOffData);
+          setEmergencyRequests(emergencyData);
         } catch (error) {
           setError(error instanceof Error ? error.message : 'シフトデータの読み込みに失敗しました');
         }
@@ -205,14 +362,34 @@ export default function ShiftCreatePage() {
     } else if (!selectedStore && stores.length > 0) {
       // 店舗が選択されていない場合はシフトをクリア
       setShifts([]);
+      setEmergencyRequests([]);
     }
-  }, [selectedStore, selectedWeek, stores]);
+  }, [selectedStore, selectedWeek, stores, viewMode]); // viewModeを依存配列に追加
 
-  // 週の日付を生成
-  const getWeekDates = (startDate: string) => {
+  // 表示期間に応じた日付を生成
+  const getDisplayDates = (startDate: string, mode: 'week' | 'half-month' | 'month') => {
     const start = new Date(startDate);
     const dates = [];
-    for (let i = 0; i < 7; i++) {
+    let dayCount = 7; // デフォルトは週表示
+
+    switch (mode) {
+      case 'week':
+        dayCount = 7;
+        break;
+      case 'half-month':
+        dayCount = 14;
+        break;
+      case 'month':
+        // 月の開始日に調整
+        start.setDate(1);
+        const year = start.getFullYear();
+        const month = start.getMonth();
+        const lastDay = new Date(year, month + 1, 0).getDate();
+        dayCount = lastDay;
+        break;
+    }
+
+    for (let i = 0; i < dayCount; i++) {
       const date = new Date(start);
       date.setDate(start.getDate() + i);
       dates.push(date);
@@ -220,7 +397,7 @@ export default function ShiftCreatePage() {
     return dates;
   };
 
-  const weekDates = getWeekDates(selectedWeek);
+  const displayDates = getDisplayDates(selectedWeek, viewMode);
   const selectedStoreData = stores.find(store => store.id === selectedStore);
 
   const timeSlots = [
@@ -263,14 +440,22 @@ export default function ShiftCreatePage() {
         if (shift.date !== date || shift.storeId !== selectedStore) return false;
         
         const pattern = shiftPatterns.find(p => p.id === shift.patternId);
-        if (!pattern || !pattern.startTime) return false;
+        if (!pattern || !pattern.startTime || !pattern.endTime) return false;
 
-        // パターンが時間帯に含まれるかチェック
-        const patternTime = pattern.startTime.split(':').map(Number);
-        if (patternTime.length < 2 || isNaN(patternTime[0]) || isNaN(patternTime[1])) {
+        // パターンの開始時間と終了時間を分単位に変換
+        const patternStartTime = pattern.startTime.split(':').map(Number);
+        const patternEndTime = pattern.endTime.split(':').map(Number);
+        
+        if (patternStartTime.length < 2 || patternEndTime.length < 2 || 
+            isNaN(patternStartTime[0]) || isNaN(patternStartTime[1]) ||
+            isNaN(patternEndTime[0]) || isNaN(patternEndTime[1])) {
           return false;
         }
 
+        const patternStartMinutes = patternStartTime[0] * 60 + patternStartTime[1];
+        const patternEndMinutes = patternEndTime[0] * 60 + patternEndTime[1];
+
+        // 時間帯の範囲定義
         const slotTimeRanges = {
           morning: { start: [8, 0], end: [11, 0] },
           lunch: { start: [11, 0], end: [16, 0] },
@@ -280,11 +465,13 @@ export default function ShiftCreatePage() {
         const range = slotTimeRanges[timeSlot as keyof typeof slotTimeRanges];
         if (!range) return false;
 
-        const patternStartMinutes = patternTime[0] * 60 + patternTime[1];
         const slotStartMinutes = range.start[0] * 60 + range.start[1];
         const slotEndMinutes = range.end[0] * 60 + range.end[1];
 
-        return patternStartMinutes >= slotStartMinutes && patternStartMinutes < slotEndMinutes;
+        // 時間範囲の重複判定
+        // シフトパターンの開始時間が時間帯の終了時間より前で、
+        // シフトパターンの終了時間が時間帯の開始時間より後の場合、重複している
+        return patternStartMinutes < slotEndMinutes && patternEndMinutes > slotStartMinutes;
       });
     } catch (error) {
       console.error('Error in getShiftForSlot:', error);
@@ -298,10 +485,14 @@ export default function ShiftCreatePage() {
       setError('店舗を選択してください');
       return;
     }
+
+    // 確定済みシフトがある場合でもスタッフ追加は可能
+    // （削除制限は個別のシフトレベルで維持）
     
     setModalData({ date, timeSlot, dayIndex });
     setSelectedUser('');
     setSelectedPattern('');
+    setStaffConflict(null); // スタッフ競合をクリア
     setIsModalOpen(true);
   };
 
@@ -334,7 +525,18 @@ export default function ShiftCreatePage() {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || 'シフトの追加に失敗しました');
+        
+        // 重複エラーの場合、詳細な情報を表示
+        if (response.status === 409 && errorData.conflictingStore) {
+          const selectedUserName = users.find(u => u.id === selectedUser)?.name || '選択されたスタッフ';
+          const conflictingStoreName = errorData.conflictingStore;
+          const currentStoreName = stores.find(s => s.id === selectedStore)?.name || '現在の店舗';
+          
+          setError(`${selectedUserName}は既に${conflictingStoreName}で出勤予定です。同じ日に複数の店舗で勤務することはできません。`);
+        } else {
+          setError(errorData.error || 'シフトの追加に失敗しました');
+        }
+        return;
       }
 
       const result = await response.json();
@@ -363,6 +565,13 @@ export default function ShiftCreatePage() {
   // シフト削除
   const handleDeleteShift = async (shiftId: string) => {
     try {
+      // 確定済みシフトの削除を制限
+      const shiftToDelete = shifts.find(s => s.id === shiftId);
+      if (shiftToDelete && shiftToDelete.status === 'confirmed') {
+        setError('確定済みのシフトは削除できません');
+        return;
+      }
+
       const response = await fetch(`/api/shifts?id=${shiftId}`, {
         method: 'DELETE',
       });
@@ -376,6 +585,239 @@ export default function ShiftCreatePage() {
     } catch (error) {
       setError(error instanceof Error ? error.message : 'シフトの削除に失敗しました');
     }
+  };
+
+  // シフト確定
+  const handleConfirmShifts = async () => {
+    if (!selectedStore || !selectedWeek) {
+      setError('店舗と期間を選択してください');
+      return;
+    }
+
+    try {
+      setSaving(true);
+      setError(null);
+
+      // 表示期間に応じて期間の開始・終了日を計算
+      const periodStart = new Date(selectedWeek);
+      let periodEnd = new Date(selectedWeek);
+      
+      if (viewMode === 'week') {
+        periodEnd.setDate(periodStart.getDate() + 6);
+      } else if (viewMode === 'half-month') {
+        periodEnd.setDate(periodStart.getDate() + 13);
+      } else if (viewMode === 'month') {
+        periodStart.setDate(1);
+        periodEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0);
+      }
+
+      const response = await fetch('/api/shifts', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          store_id: selectedStore,
+          week_start: periodStart.toISOString().split('T')[0],
+          week_end: periodEnd.toISOString().split('T')[0],
+          status: 'confirmed'
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'シフトの確定に失敗しました');
+      }
+
+      const result = await response.json();
+      
+      // 成功メッセージを表示
+      const periodName = viewMode === 'week' ? '週' : viewMode === 'half-month' ? '半月' : '月';
+      alert(`${result.updated_count}件の${periodName}間シフトを確定しました`);
+      
+      // データを完全に再取得
+      const startDate = periodStart.toISOString().split('T')[0];
+      const endDate = periodEnd.toISOString().split('T')[0];
+      
+      const [refreshedShifts, refreshedTimeOff] = await Promise.all([
+        fetchShifts(selectedStore, startDate, endDate),
+        fetchApprovedTimeOffRequests(startDate, endDate)
+      ]);
+      
+      setShifts(refreshedShifts);
+      setApprovedTimeOffRequests(refreshedTimeOff);
+      
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'シフトの確定に失敗しました');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // 下書き保存
+  const handleSaveDraft = async () => {
+    if (!selectedStore || !selectedWeek) {
+      setError('店舗と期間を選択してください');
+      return;
+    }
+
+    try {
+      setSaving(true);
+      setError(null);
+
+      // 表示期間に応じて期間の開始・終了日を計算
+      const periodStart = new Date(selectedWeek);
+      let periodEnd = new Date(selectedWeek);
+      
+      if (viewMode === 'week') {
+        periodEnd.setDate(periodStart.getDate() + 6);
+      } else if (viewMode === 'half-month') {
+        periodEnd.setDate(periodStart.getDate() + 13);
+      } else if (viewMode === 'month') {
+        periodStart.setDate(1);
+        periodEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0);
+      }
+
+      const response = await fetch('/api/shifts', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          store_id: selectedStore,
+          week_start: periodStart.toISOString().split('T')[0],
+          week_end: periodEnd.toISOString().split('T')[0],
+          status: 'draft'
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '下書き保存に失敗しました');
+      }
+
+      const result = await response.json();
+      
+      // 成功メッセージを表示
+      const periodName = viewMode === 'week' ? '週' : viewMode === 'half-month' ? '半月' : '月';
+      alert(`${result.updated_count}件の${periodName}間シフトを下書きとして保存しました`);
+      
+      // データを完全に再取得
+      const startDate = periodStart.toISOString().split('T')[0];
+      const endDate = periodEnd.toISOString().split('T')[0];
+      
+      const [refreshedShifts, refreshedTimeOff] = await Promise.all([
+        fetchShifts(selectedStore, startDate, endDate),
+        fetchApprovedTimeOffRequests(startDate, endDate)
+      ]);
+      
+      setShifts(refreshedShifts);
+      setApprovedTimeOffRequests(refreshedTimeOff);
+      
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '下書き保存に失敗しました');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // 特定の日付でスタッフが希望休を取得しているかチェック
+  const isStaffOnTimeOff = (userId: string, date: string) => {
+    return approvedTimeOffRequests.some(request => 
+      request.userId === userId && request.date === date
+    );
+  };
+
+  // 勤怠ルール違反をチェック
+  const checkWorkRuleViolations = (userId: string, date: string, patternId: string) => {
+    const warnings: string[] = [];
+    const selectedStoreData = stores.find(store => store.id === selectedStore);
+    
+    if (!selectedStoreData?.workRules) return warnings;
+
+    const workRules = selectedStoreData.workRules;
+    const checkDate = new Date(date);
+    
+    // 週の開始日（月曜日）を取得
+    const weekStart = new Date(checkDate);
+    weekStart.setDate(checkDate.getDate() - checkDate.getDay() + 1);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+
+    // 同じユーザーの週間シフトを取得
+    const weeklyShifts = shifts.filter(shift => {
+      const shiftDate = new Date(shift.date);
+      return shift.userId === userId && 
+             shiftDate >= weekStart && 
+             shiftDate <= weekEnd;
+    });
+
+    // 新しいシフトパターンの時間数を計算
+    const newPattern = shiftPatterns.find(p => p.id === patternId);
+    let newShiftHours = 0;
+    if (newPattern && newPattern.startTime && newPattern.endTime) {
+      const startTime = newPattern.startTime.split(':').map(Number);
+      const endTime = newPattern.endTime.split(':').map(Number);
+      const startMinutes = startTime[0] * 60 + startTime[1];
+      const endMinutes = endTime[0] * 60 + endTime[1];
+      newShiftHours = (endMinutes - startMinutes) / 60;
+      if (newPattern.breakTime) {
+        newShiftHours -= newPattern.breakTime / 60;
+      }
+    }
+
+    // 週間労働時間チェック
+    let weeklyHours = newShiftHours;
+    weeklyShifts.forEach(shift => {
+      const pattern = shiftPatterns.find(p => p.id === shift.patternId);
+      if (pattern && pattern.startTime && pattern.endTime) {
+        const startTime = pattern.startTime.split(':').map(Number);
+        const endTime = pattern.endTime.split(':').map(Number);
+        const startMinutes = startTime[0] * 60 + startTime[1];
+        const endMinutes = endTime[0] * 60 + endTime[1];
+        let shiftHours = (endMinutes - startMinutes) / 60;
+        if (pattern.breakTime) {
+          shiftHours -= pattern.breakTime / 60;
+        }
+        weeklyHours += shiftHours;
+      }
+    });
+
+    if (weeklyHours > workRules.maxWeeklyHours) {
+      warnings.push(`週間労働時間が${workRules.maxWeeklyHours}時間を超えます（${weeklyHours.toFixed(1)}時間）`);
+    }
+
+    // 連続勤務日数チェック
+    const userShifts = shifts
+      .filter(shift => shift.userId === userId)
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    
+    // 新しいシフトを含めて連続勤務日数を計算
+    const allShifts = [...userShifts, { date, userId, patternId }]
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    let consecutiveDays = 1;
+    let maxConsecutive = 1;
+    const targetDate = new Date(date);
+
+    for (let i = 1; i < allShifts.length; i++) {
+      const prevDate = new Date(allShifts[i - 1].date);
+      const currentDate = new Date(allShifts[i].date);
+      const diffDays = (currentDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24);
+      
+      if (diffDays === 1) {
+        consecutiveDays++;
+        maxConsecutive = Math.max(maxConsecutive, consecutiveDays);
+      } else {
+        consecutiveDays = 1;
+      }
+    }
+
+    if (maxConsecutive > workRules.maxConsecutiveDays) {
+      warnings.push(`連続勤務日数が${workRules.maxConsecutiveDays}日を超えます（${maxConsecutive}日）`);
+    }
+
+    return warnings;
   };
 
   // 店舗所属スタッフのみフィルタ
@@ -403,24 +845,34 @@ export default function ShiftCreatePage() {
         };
       }
 
-      const weekShifts = shifts.filter(shift => {
+      // 表示期間に応じて期間の開始・終了日を計算
+      const periodStart = new Date(selectedWeek);
+      let periodEnd = new Date(selectedWeek);
+      
+      if (viewMode === 'week') {
+        periodEnd.setDate(periodStart.getDate() + 6);
+      } else if (viewMode === 'half-month') {
+        periodEnd.setDate(periodStart.getDate() + 13);
+      } else if (viewMode === 'month') {
+        periodStart.setDate(1);
+        periodEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0);
+      }
+
+      const periodShifts = shifts.filter(shift => {
         try {
           const shiftDate = new Date(shift.date);
-          const weekStart = new Date(selectedWeek);
-          const weekEnd = new Date(weekStart);
-          weekEnd.setDate(weekStart.getDate() + 6);
-          return shiftDate >= weekStart && shiftDate <= weekEnd && shift.storeId === selectedStore;
+          return shiftDate >= periodStart && shiftDate <= periodEnd && shift.storeId === selectedStore;
         } catch (error) {
-          console.error('Error filtering week shifts:', error);
+          console.error('Error filtering period shifts:', error);
           return false;
         }
       });
 
       let totalHours = 0;
       let totalWage = 0;
-      let staffCount = new Set();
+      const staffCount = new Set();
 
-      weekShifts.forEach(shift => {
+      periodShifts.forEach(shift => {
         try {
           const pattern = shiftPatterns.find(p => p.id === shift.patternId);
           const user = users.find(u => u.id === shift.userId);
@@ -467,6 +919,165 @@ export default function ShiftCreatePage() {
 
   const weeklyStats = calculateWeeklyStats();
 
+  // 週のシフト確定状況を確認
+  const weekShiftStatus = () => {
+    const periodStart = new Date(selectedWeek);
+    let periodEnd = new Date(selectedWeek);
+    
+    if (viewMode === 'week') {
+      periodEnd.setDate(periodStart.getDate() + 6);
+    } else if (viewMode === 'half-month') {
+      periodEnd.setDate(periodStart.getDate() + 13);
+    } else if (viewMode === 'month') {
+      periodStart.setDate(1);
+      periodEnd = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0);
+    }
+    
+    const periodShifts = shifts.filter(shift => {
+      const shiftDate = new Date(shift.date);
+      return shiftDate >= periodStart && shiftDate <= periodEnd && shift.storeId === selectedStore;
+    });
+    
+    if (periodShifts.length === 0) return { hasShifts: false, allConfirmed: false, hasConfirmed: false };
+    
+    const confirmedShifts = periodShifts.filter(shift => shift.status === 'confirmed');
+    return {
+      hasShifts: true,
+      allConfirmed: confirmedShifts.length === periodShifts.length,
+      hasConfirmed: confirmedShifts.length > 0,
+      totalShifts: periodShifts.length,
+      confirmedCount: confirmedShifts.length
+    };
+  };
+
+  const shiftStatus = weekShiftStatus();
+
+  // 特定のスタッフが他の店舗で同じ日に勤務予定かチェック
+  const checkStaffConflictAtOtherStores = async (userId: string, date: string) => {
+    try {
+      const response = await fetch(`/api/shifts?user_id=${userId}&date_from=${date}&date_to=${date}`);
+      if (!response.ok) return null;
+      
+      const result = await response.json();
+      const existingShifts = result.data || [];
+      
+      // 現在選択中の店舗以外でのシフトを確認
+      const conflictingShift = existingShifts.find((shift: any) => 
+        shift.store_id !== selectedStore && shift.date === date
+      );
+      
+      if (conflictingShift) {
+        return {
+          storeName: conflictingShift.stores?.name || '不明な店舗',
+          storeId: conflictingShift.store_id
+        };
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error checking staff conflict:', error);
+      return null;
+    }
+  };
+
+  // スタッフ選択時の競合チェック
+  const [staffConflict, setStaffConflict] = useState<{storeName: string, storeId: string} | null>(null);
+  
+  // スタッフ選択が変更された時の処理
+  const handleStaffSelection = async (userId: string) => {
+    setSelectedUser(userId);
+    setStaffConflict(null);
+    
+    if (userId && modalData) {
+      const conflict = await checkStaffConflictAtOtherStores(userId, modalData.date);
+      setStaffConflict(conflict);
+    }
+  };
+
+  // 代打募集を作成
+  const handleCreateEmergencyRequest = async () => {
+    if (!emergencyModal.shift || !emergencyReason.trim()) {
+      setError('理由を入力してください');
+      return;
+    }
+
+    try {
+      setSubmittingEmergency(true);
+      setError(null);
+
+      const response = await fetch('/api/emergency-requests', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          original_user_id: emergencyModal.shift.userId,
+          store_id: selectedStore,
+          date: emergencyModal.shift.date,
+          shift_pattern_id: emergencyModal.shift.patternId,
+          reason: emergencyReason.trim()
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '代打募集の作成に失敗しました');
+      }
+
+      const result = await response.json();
+      
+      // 代打募集データを更新
+      setEmergencyRequests([...emergencyRequests, result.data]);
+      
+      // モーダルを閉じる
+      setEmergencyModal({ show: false, shift: null });
+      setEmergencyReason('');
+      
+      alert('代打募集を開始しました');
+      
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '代打募集の作成に失敗しました');
+    } finally {
+      setSubmittingEmergency(false);
+    }
+  };
+
+  // 特定のシフトが代打募集中かチェック
+  const getEmergencyRequestForShift = (shiftId: string) => {
+    return emergencyRequests.find(req => 
+      req.original_user_id === shifts.find(s => s.id === shiftId)?.userId &&
+      req.date === shifts.find(s => s.id === shiftId)?.date &&
+      req.shift_pattern_id === shifts.find(s => s.id === shiftId)?.patternId &&
+      req.status === 'open'
+    );
+  };
+
+  // 右クリックメニューを表示
+  const handleShiftRightClick = (e: React.MouseEvent, shift: any) => {
+    // 確定済みシフトのみ代打募集可能
+    if (shift.status !== 'confirmed') return;
+    
+    e.preventDefault();
+    setContextMenu({
+      show: true,
+      x: e.clientX,
+      y: e.clientY,
+      shiftId: shift.id,
+      shift: shift
+    });
+  };
+
+  // コンテキストメニューを閉じる
+  const handleCloseContextMenu = () => {
+    setContextMenu({ show: false, x: 0, y: 0, shiftId: '', shift: null });
+  };
+
+  // 代打募集モーダルを開く
+  const handleOpenEmergencyModal = (shift: any) => {
+    setEmergencyModal({ show: true, shift });
+    handleCloseContextMenu();
+  };
+
   // ローディング表示
   if (loading) {
     return (
@@ -482,7 +1093,7 @@ export default function ShiftCreatePage() {
   }
 
   // エラー表示
-  if (error) {
+  if (error && !stores.length && !users.length) {
     return (
       <AuthenticatedLayout>
         <div className="flex items-center justify-center min-h-[400px]">
@@ -533,29 +1144,23 @@ export default function ShiftCreatePage() {
 
   return (
     <AuthenticatedLayout>
-      <div className="space-y-6">
+      <div className="space-y-6" onClick={handleCloseContextMenu}>
         {/* エラー表示バー */}
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-            <div className="flex">
-              <div className="flex-shrink-0">
-                <svg className="h-5 w-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            <div className="flex items-center">
+              <svg className="w-5 h-5 text-red-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-red-700">{error}</p>
+              <button 
+                onClick={() => setError(null)}
+                className="ml-auto text-red-400 hover:text-red-600"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
-              </div>
-              <div className="ml-3">
-                <p className="text-sm text-red-700">{error}</p>
-              </div>
-              <div className="ml-auto pl-3">
-                <button
-                  onClick={() => setError(null)}
-                  className="text-red-400 hover:text-red-600"
-                >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
+              </button>
             </div>
           </div>
         )}
@@ -564,20 +1169,28 @@ export default function ShiftCreatePage() {
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">シフト作成</h1>
-            <p className="text-gray-600 mt-2">週単位でシフトを作成・編集できます</p>
+            <p className="text-gray-600 mt-2">期間単位でシフトを作成・編集できます</p>
           </div>
           <div className="flex gap-3">
-            <Button variant="secondary" disabled={saving}>
+            <Button 
+              variant="secondary" 
+              disabled={saving || !shiftStatus.hasShifts} 
+              onClick={handleSaveDraft}
+            >
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3-3m0 0l-3 3m3-3v12" />
               </svg>
               下書き保存
             </Button>
-            <Button disabled={saving}>
+            <Button 
+              disabled={saving || !shiftStatus.hasShifts || shiftStatus.allConfirmed} 
+              onClick={handleConfirmShifts}
+              className={shiftStatus.allConfirmed ? 'bg-green-600 hover:bg-green-700' : ''}
+            >
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
               </svg>
-              シフト確定
+              {shiftStatus.allConfirmed ? '確定済み' : 'シフト確定'}
             </Button>
           </div>
         </div>
@@ -587,13 +1200,21 @@ export default function ShiftCreatePage() {
           <Card>
             <CardContent className="pt-6">
               <div className="text-2xl font-bold text-blue-600">{weeklyStats.totalHours}h</div>
-              <p className="text-sm text-gray-500 mt-1">総勤務時間</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {viewMode === 'week' ? '総勤務時間' : 
+                 viewMode === 'half-month' ? '半月勤務時間' : 
+                 '月間勤務時間'}
+              </p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="pt-6">
               <div className="text-2xl font-bold text-green-600">¥{weeklyStats.totalWage.toLocaleString()}</div>
-              <p className="text-sm text-gray-500 mt-1">人件費概算</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {viewMode === 'week' ? '総人件費' : 
+                 viewMode === 'half-month' ? '半月人件費' : 
+                 '月間人件費'}
+              </p>
             </CardContent>
           </Card>
           <Card>
@@ -613,6 +1234,51 @@ export default function ShiftCreatePage() {
         {/* 店舗・週選択 */}
         <Card>
           <CardContent className="pt-6">
+            {/* 表示期間切り替えタブ */}
+            <div className="mb-6">
+              <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg w-fit">
+                <button
+                  onClick={() => {
+                    setViewMode('week');
+                    setSelectedWeek(getAppropriateStartDate('week'));
+                  }}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                    viewMode === 'week'
+                      ? 'bg-white text-blue-600 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  週表示
+                </button>
+                <button
+                  onClick={() => {
+                    setViewMode('half-month');
+                    setSelectedWeek(getAppropriateStartDate('half-month'));
+                  }}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                    viewMode === 'half-month'
+                      ? 'bg-white text-blue-600 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  半月表示
+                </button>
+                <button
+                  onClick={() => {
+                    setViewMode('month');
+                    setSelectedWeek(getAppropriateStartDate('month'));
+                  }}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                    viewMode === 'month'
+                      ? 'bg-white text-blue-600 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  月表示
+                </button>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -635,12 +1301,20 @@ export default function ShiftCreatePage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  週選択（月曜日開始）
+                  {viewMode === 'week' ? '週選択（月曜日開始）' : 
+                   viewMode === 'half-month' ? '半月選択（開始日）' : 
+                   '月選択'}
                 </label>
                 <input
-                  type="date"
-                  value={selectedWeek}
-                  onChange={(e) => setSelectedWeek(e.target.value)}
+                  type={viewMode === 'month' ? 'month' : 'date'}
+                  value={viewMode === 'month' ? selectedWeek.substring(0, 7) : selectedWeek}
+                  onChange={(e) => {
+                    if (viewMode === 'month') {
+                      setSelectedWeek(e.target.value + '-01');
+                    } else {
+                      setSelectedWeek(e.target.value);
+                    }
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   disabled={loading}
                 />
@@ -650,7 +1324,7 @@ export default function ShiftCreatePage() {
                   <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                   </svg>
-                  前週コピー
+                  前期間コピー
                 </Button>
               </div>
             </div>
@@ -665,18 +1339,28 @@ export default function ShiftCreatePage() {
           <CardContent>
             <div className="mb-4 p-3 bg-yellow-50 rounded-xl">
               <h4 className="font-medium text-yellow-900 mb-1">操作方法</h4>
-              <p className="text-sm text-yellow-800">各セルをクリックしてシフトを追加・編集できます。色分け：🔴不足 / 🟢適正 / 🔵過剰</p>
+              <p className="text-sm text-yellow-800">
+                各セルをクリックしてシフトを追加・編集できます。色分け：🔴不足 / 🟢適正 / 🔵過剰
+                {viewMode === 'month' && (
+                  <><br />月表示では横スクロールで全日程を確認できます。</>
+                )}
+              </p>
             </div>
             
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
+              <table className="w-full border-collapse" style={{ minWidth: viewMode === 'month' ? '2000px' : 'auto' }}>
                 <thead>
                   <tr className="border-b border-gray-200">
                     <th className="text-left p-3 font-medium text-gray-900 bg-gray-50 sticky left-0 z-10">時間帯</th>
-                    {weekDates.map((date, index) => (
-                      <th key={index} className="text-center p-3 font-medium text-gray-900 bg-gray-50 min-w-36">
+                    {displayDates.map((date, index) => (
+                      <th key={index} className={`text-center p-2 font-medium text-gray-900 bg-gray-50 ${
+                        viewMode === 'month' ? 'min-w-24' : 'min-w-36'
+                      }`}>
                         <div>
-                          {date.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' })}
+                          {date.toLocaleDateString('ja-JP', { 
+                            month: viewMode === 'month' ? 'numeric' : 'short', 
+                            day: 'numeric' 
+                          })}
                         </div>
                         <div className="text-xs text-gray-500">
                           {date.toLocaleDateString('ja-JP', { weekday: 'short' })}
@@ -692,7 +1376,7 @@ export default function ShiftCreatePage() {
                         <div className="font-medium text-gray-900">{timeSlot.name}</div>
                         <div className="text-xs text-gray-500">{timeSlot.time}</div>
                       </td>
-                      {weekDates.map((date, dayIndex) => {
+                      {displayDates.map((date, dayIndex) => {
                         try {
                           const dateString = date.toISOString().split('T')[0];
                           const dayShifts = getShiftForSlot(dateString, timeSlot.id);
@@ -715,7 +1399,7 @@ export default function ShiftCreatePage() {
                             <td key={dayIndex} className="p-2">
                               <div 
                                 className={`min-h-28 border-2 rounded-xl p-2 cursor-pointer hover:shadow-md transition-all ${cellStyle}`}
-                                onClick={() => handleCellClick(dateString, timeSlot.id, date.getDay())}
+                                onClick={(e) => handleCellClick(dateString, timeSlot.id, date.getDay())}
                               >
                                 {/* 必要人数表示 */}
                                 <div className="flex items-center justify-between mb-2">
@@ -739,29 +1423,68 @@ export default function ShiftCreatePage() {
                                       if (!user || !pattern) {
                                         return null;
                                       }
+
+                                      // 確定済みシフトかどうかを判定
+                                      const isConfirmed = shift.status === 'confirmed';
+                                      
+                                      // 代打募集状況をチェック
+                                      const emergencyRequest = getEmergencyRequestForShift(shift.id);
+                                      const isEmergencyRequested = !!emergencyRequest;
                                       
                                       return (
                                         <div key={shift.id} className="relative group">
                                           <div
-                                            className="text-xs p-1.5 rounded-lg text-white font-medium flex items-center justify-between"
+                                            className={`text-xs p-1.5 rounded-lg text-white font-medium flex items-center justify-between relative ${
+                                              isConfirmed ? 'ring-2 ring-yellow-400' : ''
+                                            } ${
+                                              isEmergencyRequested ? 'ring-2 ring-red-500 ring-dashed' : ''
+                                            }`}
                                             style={{ backgroundColor: pattern.color || '#6B7280' }}
+                                            onContextMenu={(e) => handleShiftRightClick(e, shift)}
                                           >
-                                            <span className="truncate">{user.name || '不明'}</span>
-                                            <button
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleDeleteShift(shift.id);
-                                              }}
-                                              className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 hover:bg-black hover:bg-opacity-20 rounded"
-                                            >
-                                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                              </svg>
-                                            </button>
+                                            <span className="truncate flex items-center">
+                                              {user.name || '不明'}
+                                              {isConfirmed && (
+                                                <span className="ml-1 text-yellow-300">✓</span>
+                                              )}
+                                              {isEmergencyRequested && (
+                                                <span className="ml-1 text-red-300">🆘</span>
+                                              )}
+                                            </span>
+                                            {!isConfirmed && !isEmergencyRequested && (
+                                              <button
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleDeleteShift(shift.id);
+                                                }}
+                                                className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 hover:bg-black hover:bg-opacity-20 rounded"
+                                              >
+                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                                </svg>
+                                              </button>
+                                            )}
                                           </div>
-                                          <div className="text-xs text-gray-500 mt-0.5">
-                                            {pattern.startTime || '00:00'}-{pattern.endTime || '00:00'}
+                                          <div className="text-xs text-gray-500 mt-0.5 flex items-center justify-between">
+                                            <span>
+                                              {pattern.startTime || '00:00'}-{pattern.endTime || '00:00'}
+                                            </span>
+                                            <div className="flex items-center space-x-1">
+                                              {isConfirmed && (
+                                                <span className="text-green-600 font-medium">確定</span>
+                                              )}
+                                              {isEmergencyRequested && (
+                                                <span className="text-red-600 font-medium text-xs">代打募集中</span>
+                                              )}
+                                            </div>
                                           </div>
+                                          
+                                          {/* 代打募集バッジ */}
+                                          {isEmergencyRequested && (
+                                            <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs px-1 py-0.5 rounded-full">
+                                              募集中
+                                            </div>
+                                          )}
                                         </div>
                                       );
                                     } catch (error) {
@@ -827,117 +1550,270 @@ export default function ShiftCreatePage() {
 
         {/* シフト追加モーダル */}
         {isModalOpen && modalData && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto">
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-xl font-bold text-gray-900">シフト追加</h2>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setIsModalOpen(false)}
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </Button>
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">シフト追加</h3>
+                <button
+                  onClick={() => setIsModalOpen(false)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <p className="text-sm text-gray-600">
+                    {new Date(modalData.date).toLocaleDateString('ja-JP', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric',
+                      weekday: 'long'
+                    })}
+                  </p>
+                  <p className="text-sm text-gray-500">
+                    {timeSlots.find(ts => ts.id === modalData.timeSlot)?.name} 
+                    ({timeSlots.find(ts => ts.id === modalData.timeSlot)?.time})
+                  </p>
                 </div>
 
-                <div className="space-y-4">
-                  <div>
-                    <p className="text-sm text-gray-600">
-                      {new Date(modalData.date).toLocaleDateString('ja-JP', {
-                        year: 'numeric',
-                        month: 'long',
-                        day: 'numeric',
-                        weekday: 'long'
-                      })}
-                    </p>
-                    <p className="text-sm text-gray-500">
-                      {timeSlots.find(ts => ts.id === modalData.timeSlot)?.name} 
-                      ({timeSlots.find(ts => ts.id === modalData.timeSlot)?.time})
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      スタッフ選択 *
-                    </label>
-                    <select
-                      value={selectedUser}
-                      onChange={(e) => setSelectedUser(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    >
-                      <option value="">スタッフを選択してください</option>
-                      {availableStaff.map(user => (
-                        <option key={user.id} value={user.id}>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    スタッフ選択 *
+                  </label>
+                  <select
+                    value={selectedUser}
+                    onChange={(e) => handleStaffSelection(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="">スタッフを選択してください</option>
+                    {availableStaff.map(user => {
+                      const isOnTimeOff = isStaffOnTimeOff(user.id, modalData.date);
+                      return (
+                        <option 
+                          key={user.id} 
+                          value={user.id} 
+                          disabled={isOnTimeOff}
+                          style={isOnTimeOff ? { color: '#9CA3AF', backgroundColor: '#F3F4F6' } : {}}
+                        >
                           {user.name} ({user.skillLevel === 'veteran' ? 'ベテラン' : user.skillLevel === 'regular' ? '一般' : '研修中'})
+                          {isOnTimeOff && ' [希望休承認済み]'}
                         </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      シフトパターン *
-                    </label>
-                    <select
-                      value={selectedPattern}
-                      onChange={(e) => setSelectedPattern(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    >
-                      <option value="">パターンを選択してください</option>
-                      {shiftPatterns.map(pattern => (
-                        <option key={pattern.id} value={pattern.id}>
-                          {pattern.name} ({pattern.startTime}-{pattern.endTime})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {selectedUser && selectedPattern && (
-                    <div className="p-3 bg-blue-50 rounded-xl">
-                      <h4 className="font-medium text-blue-900 mb-1">プレビュー</h4>
-                      <div className="text-sm text-blue-800">
-                        {users.find(u => u.id === selectedUser)?.name} - {' '}
-                        {shiftPatterns.find(p => p.id === selectedPattern)?.name}
-                        <br />
-                        勤務時間: {(() => {
-                          const pattern = shiftPatterns.find(p => p.id === selectedPattern);
-                          if (!pattern) return '0時間';
-                          const start = pattern.startTime.split(':').map(Number);
-                          const end = pattern.endTime.split(':').map(Number);
-                          const hours = (end[0] * 60 + end[1] - start[0] * 60 - start[1] - (pattern.breakTime || 0)) / 60;
-                          return `${hours}時間`;
-                        })()}
-                        <br />
-                        時給: ¥{selectedUser ? calculateHourlyWage(users.find(u => u.id === selectedUser)?.skillLevel || 'training') : 0}
+                      );
+                    })}
+                  </select>
+                  
+                  {/* 他店舗での勤務予定警告 */}
+                  {staffConflict && (
+                    <div className="mt-2 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                      <div className="flex items-center">
+                        <svg className="w-5 h-5 text-orange-600 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.268 15.5c-.77.833.192 2.5 1.732 2.5z" />
+                        </svg>
+                        <p className="text-sm text-orange-700">
+                          <strong>{users.find(u => u.id === selectedUser)?.name}</strong>は既に<strong>{staffConflict.storeName}</strong>で出勤予定です
+                        </p>
+                      </div>
+                      <p className="text-xs text-orange-600 mt-1">
+                        同じ日に複数の店舗で勤務することはできません
+                      </p>
+                    </div>
+                  )}
+                  
+                  {/* 希望休承認済みスタッフの警告表示 */}
+                  {availableStaff.some(user => isStaffOnTimeOff(user.id, modalData.date)) && (
+                    <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                      <div className="flex items-center">
+                        <svg className="w-5 h-5 text-yellow-600 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.268 15.5c-.77.833.192 2.5 1.732 2.5z" />
+                        </svg>
+                        <p className="text-sm text-yellow-700">
+                          この日は希望休が承認されているスタッフがいます
+                        </p>
                       </div>
                     </div>
                   )}
+                </div>
 
-                  <div className="flex justify-end space-x-3 pt-4">
-                    <Button
-                      variant="secondary"
-                      onClick={() => setIsModalOpen(false)}
-                      disabled={saving}
-                    >
-                      キャンセル
-                    </Button>
-                    <Button
-                      onClick={handleAddShift}
-                      disabled={!selectedUser || !selectedPattern || saving}
-                    >
-                      {saving ? (
-                        <>
-                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                          追加中...
-                        </>
-                      ) : (
-                        '追加'
-                      )}
-                    </Button>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    シフトパターン *
+                  </label>
+                  <select
+                    value={selectedPattern}
+                    onChange={(e) => setSelectedPattern(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="">パターンを選択してください</option>
+                    {shiftPatterns.map(pattern => (
+                      <option key={pattern.id} value={pattern.id}>
+                        {pattern.name} ({pattern.startTime}-{pattern.endTime})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 勤怠ルール警告表示 */}
+                {selectedUser && selectedPattern && modalData && (() => {
+                  const warnings = checkWorkRuleViolations(selectedUser, modalData.date, selectedPattern);
+                  return warnings.length > 0 ? (
+                    <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                      <div className="flex items-start">
+                        <svg className="w-5 h-5 text-red-600 mr-2 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.268 15.5c-.77.833.192 2.5 1.732 2.5z" />
+                        </svg>
+                        <div>
+                          <p className="text-sm font-medium text-red-800 mb-1">勤怠ルール警告</p>
+                          <ul className="text-sm text-red-700 space-y-1">
+                            {warnings.map((warning, index) => (
+                              <li key={index}>• {warning}</li>
+                            ))}
+                          </ul>
+                          <p className="text-xs text-red-600 mt-2">
+                            ※ 警告が表示されてもシフトの保存は可能ですが、労働基準法の遵守をお勧めします
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null;
+                })()}
+
+                {selectedUser && selectedPattern && (
+                  <div className="p-3 bg-blue-50 rounded-xl">
+                    <h4 className="font-medium text-blue-900 mb-1">プレビュー</h4>
+                    <div className="text-sm text-blue-800">
+                      {users.find(u => u.id === selectedUser)?.name} - {' '}
+                      {shiftPatterns.find(p => p.id === selectedPattern)?.name}
+                      <br />
+                      勤務時間: {(() => {
+                        const pattern = shiftPatterns.find(p => p.id === selectedPattern);
+                        if (!pattern) return '0時間';
+                        const start = pattern.startTime.split(':').map(Number);
+                        const end = pattern.endTime.split(':').map(Number);
+                        const hours = (end[0] * 60 + end[1] - start[0] * 60 - start[1] - (pattern.breakTime || 0)) / 60;
+                        return `${hours}時間`;
+                      })()}
+                      <br />
+                      時給: ¥{selectedUser ? calculateHourlyWage(users.find(u => u.id === selectedUser)?.skillLevel || 'training') : 0}
+                    </div>
                   </div>
+                )}
+
+                <div className="flex justify-end space-x-3 pt-4">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setIsModalOpen(false)}
+                    disabled={saving}
+                  >
+                    キャンセル
+                  </Button>
+                  <Button
+                    onClick={handleAddShift}
+                    disabled={!selectedUser || !selectedPattern || saving || staffConflict !== null}
+                  >
+                    {saving ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                        追加中...
+                      </>
+                    ) : (
+                      '追加'
+                    )}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 右クリックメニュー */}
+        {contextMenu.show && (
+          <div 
+            className="fixed bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-50"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            <button
+              onClick={() => handleOpenEmergencyModal(contextMenu.shift)}
+              className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center"
+            >
+              <svg className="w-4 h-4 mr-2 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.268 15.5c-.77.833.192 2.5 1.732 2.5z" />
+              </svg>
+              代打募集
+            </button>
+          </div>
+        )}
+
+        {/* 代打募集モーダル */}
+        {emergencyModal.show && emergencyModal.shift && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">代打募集</h3>
+                <button
+                  onClick={() => setEmergencyModal({ show: false, shift: null })}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <p className="text-sm text-gray-600">対象シフト</p>
+                  <p className="font-medium text-gray-900">
+                    {users.find(u => u.id === emergencyModal.shift.userId)?.name} - {' '}
+                    {shiftPatterns.find(p => p.id === emergencyModal.shift.patternId)?.name}
+                  </p>
+                  <p className="text-sm text-gray-500">
+                    {new Date(emergencyModal.shift.date).toLocaleDateString('ja-JP', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric',
+                      weekday: 'long'
+                    })}
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    募集理由 *
+                  </label>
+                  <textarea
+                    value={emergencyReason}
+                    onChange={(e) => setEmergencyReason(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    rows={3}
+                    placeholder="代打募集の理由を入力してください（例：急用のため、体調不良のため）"
+                  />
+                </div>
+
+                <div className="flex justify-end space-x-3 pt-4">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setEmergencyModal({ show: false, shift: null })}
+                    disabled={submittingEmergency}
+                  >
+                    キャンセル
+                  </Button>
+                  <Button
+                    onClick={handleCreateEmergencyRequest}
+                    disabled={!emergencyReason.trim() || submittingEmergency}
+                  >
+                    {submittingEmergency ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                        募集開始中...
+                      </>
+                    ) : (
+                      '募集開始'
+                    )}
+                  </Button>
                 </div>
               </div>
             </div>

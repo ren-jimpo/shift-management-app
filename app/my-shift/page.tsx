@@ -245,10 +245,17 @@ export default function MyShiftPage() {
                     {shift && pattern && store ? (
                       <div className="space-y-2">
                         <div
-                          className="px-3 py-2 rounded-lg text-white text-center font-medium"
+                          className={`px-3 py-2 rounded-lg text-white text-center font-medium relative ${
+                            shift.status === 'confirmed' ? 'ring-2 ring-yellow-400' : ''
+                          }`}
                           style={{ backgroundColor: pattern.color }}
                         >
                           {pattern.name}
+                          {shift.status === 'confirmed' && (
+                            <span className="absolute -top-1 -right-1 bg-yellow-400 text-yellow-900 text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                              ✓
+                            </span>
+                          )}
                         </div>
                         <div className="text-center text-sm text-gray-600">
                           {pattern.start_time} - {pattern.end_time}
@@ -256,13 +263,17 @@ export default function MyShiftPage() {
                         <div className="text-center text-xs text-gray-500">
                           {store.name}
                         </div>
-                        {shift.status === 'draft' && (
-                          <div className="text-center">
+                        <div className="text-center">
+                          {shift.status === 'confirmed' ? (
+                            <span className="inline-block px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full">
+                              確定済み
+                            </span>
+                          ) : (
                             <span className="inline-block px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded-full">
                               未確定
                             </span>
-                          </div>
-                        )}
+                          )}
+                        </div>
                       </div>
                     ) : (
                       <div className="text-center text-gray-400 text-sm">

@@ -48,6 +48,11 @@ export type Database = {
           id: string
           name: string
           required_staff: Record<string, any>
+          work_rules: {
+            max_weekly_hours?: number
+            max_consecutive_days?: number
+            min_rest_hours?: number
+          } | null
           created_at: string
           updated_at: string
         }
@@ -55,6 +60,11 @@ export type Database = {
           id: string
           name: string
           required_staff: Record<string, any>
+          work_rules?: {
+            max_weekly_hours?: number
+            max_consecutive_days?: number
+            min_rest_hours?: number
+          } | null
           created_at?: string
           updated_at?: string
         }
@@ -62,6 +72,11 @@ export type Database = {
           id?: string
           name?: string
           required_staff?: Record<string, any>
+          work_rules?: {
+            max_weekly_hours?: number
+            max_consecutive_days?: number
+            min_rest_hours?: number
+          } | null
           updated_at?: string
         }
       }

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -41,10 +42,20 @@ interface DisplayTimeOffRequest {
   respondedByName?: string;
 }
 
-// 仮の現在ユーザー（実際にはAuth0やFirebaseから取得）
-const CURRENT_USER_ID = 'current-manager-id';
+// User型の定義
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: 'manager' | 'staff';
+}
 
 export default function RequestsPage() {
+  const router = useRouter();
+  
+  // 認証状態
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  
   // データベースから取得するstate
   const [requests, setRequests] = useState<DisplayTimeOffRequest[]>([]);
   
@@ -56,6 +67,31 @@ export default function RequestsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [processing, setProcessing] = useState<string | null>(null);
+
+  // 認証チェック
+  useEffect(() => {
+    const checkAuth = () => {
+      const userData = localStorage.getItem('currentUser');
+      if (!userData) {
+        router.push('/login');
+        return;
+      }
+      
+      try {
+        const user = JSON.parse(userData);
+        if (user.role !== 'manager') {
+          router.push('/dashboard');
+          return;
+        }
+        setCurrentUser(user);
+      } catch (error) {
+        console.error('Error parsing user data:', error);
+        router.push('/login');
+      }
+    };
+
+    checkAuth();
+  }, [router]);
 
   // データ取得関数
   const fetchTimeOffRequests = async () => {
@@ -88,6 +124,8 @@ export default function RequestsPage() {
 
   // 初期データ読み込み
   useEffect(() => {
+    if (!currentUser) return;
+    
     const loadInitialData = async () => {
       try {
         setLoading(true);
@@ -104,7 +142,7 @@ export default function RequestsPage() {
     };
 
     loadInitialData();
-  }, []);
+  }, [currentUser]);
 
   // フィルタリング
   const filteredRequests = requests.filter(request => {
@@ -117,6 +155,11 @@ export default function RequestsPage() {
 
   // 承認処理
   const handleApprove = async (requestId: string) => {
+    if (!currentUser) {
+      setError('ユーザー認証が必要です');
+      return;
+    }
+    
     if (!confirm('この申請を承認してもよろしいですか？')) return;
 
     setProcessing(requestId);
@@ -131,7 +174,7 @@ export default function RequestsPage() {
         body: JSON.stringify({
           id: requestId,
           status: 'approved',
-          responded_by: CURRENT_USER_ID
+          responded_by: currentUser.id
         }),
       });
 
@@ -164,6 +207,11 @@ export default function RequestsPage() {
 
   // 却下処理
   const handleReject = async (requestId: string) => {
+    if (!currentUser) {
+      setError('ユーザー認証が必要です');
+      return;
+    }
+    
     if (!confirm('この申請を却下してもよろしいですか？')) return;
 
     setProcessing(requestId);
@@ -178,7 +226,7 @@ export default function RequestsPage() {
         body: JSON.stringify({
           id: requestId,
           status: 'rejected',
-          responded_by: CURRENT_USER_ID
+          responded_by: currentUser.id
         }),
       });
 
@@ -227,14 +275,16 @@ export default function RequestsPage() {
     }
   };
 
-  // ローディング表示
-  if (loading) {
+  // ローディング表示（認証チェック中も含む）
+  if (loading || !currentUser) {
     return (
       <AuthenticatedLayout>
         <div className="flex items-center justify-center min-h-[400px]">
           <div className="text-center">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-            <p className="text-gray-600">データを読み込んでいます...</p>
+            <p className="text-gray-600">
+              {!currentUser ? '認証情報を確認しています...' : 'データを読み込んでいます...'}
+            </p>
           </div>
         </div>
       </AuthenticatedLayout>

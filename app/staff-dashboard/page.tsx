@@ -52,6 +52,10 @@ interface EmergencyRequest {
     start_time: string;
     end_time: string;
   };
+  emergency_volunteers?: {
+    user_id: string;
+    responded_at: string;
+  }[];
 }
 
 export default function StaffDashboardPage() {
@@ -62,6 +66,7 @@ export default function StaffDashboardPage() {
   const [emergencyRequests, setEmergencyRequests] = useState<EmergencyRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [applyingTo, setApplyingTo] = useState<string | null>(null);
   const router = useRouter();
 
   // 認証チェックとユーザー情報取得
@@ -102,7 +107,7 @@ export default function StaffDashboardPage() {
 
         // 並行してデータを取得
         const [shiftsResult, requestsResult, emergencyResult] = await Promise.all([
-          fetch(`/api/shifts?user_id=${currentUser.id}&date_from=${today}&date_to=${weekEnd.toISOString().split('T')[0]}`),
+          fetch(`/api/shifts?user_id=${currentUser.id}&date_from=${today}&date_to=${weekEnd.toISOString().split('T')[0]}&status=confirmed`),
           fetch(`/api/time-off-requests?user_id=${currentUser.id}`),
           fetch('/api/emergency-requests?status=open')
         ]);
@@ -112,12 +117,13 @@ export default function StaffDashboardPage() {
           const shiftsData = await shiftsResult.json();
           const shifts = shiftsData.data || [];
           
-          // 今日のシフトを取得
-          const todayShiftData = shifts.find((shift: Shift) => shift.date === today);
+          // 今日のシフトを取得（確定済みシフトのみ）
+          const todayShiftData = shifts.find((shift: Shift) => shift.date === today && shift.status === 'confirmed');
           setTodayShift(todayShiftData || null);
           
-          // 今週のシフトを取得
-          setWeeklyShifts(shifts);
+          // 今週のシフトを取得（確定済みシフトのみ）
+          const confirmedShifts = shifts.filter((shift: Shift) => shift.status === 'confirmed');
+          setWeeklyShifts(confirmedShifts);
         }
 
         // 希望休申請データの処理
@@ -166,6 +172,90 @@ export default function StaffDashboardPage() {
     return totalHours;
   };
 
+  // 代打応募処理
+  const handleApplyEmergency = async (requestId: string) => {
+    if (!currentUser) {
+      setError('ユーザー認証が必要です');
+      return;
+    }
+
+    if (!confirm('この代打募集に応募しますか？')) return;
+
+    setApplyingTo(requestId);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/emergency-volunteers', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          emergency_request_id: requestId,
+          user_id: currentUser.id
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '応募に失敗しました');
+      }
+
+      // 成功メッセージ
+      alert('代打募集に応募しました。結果をお待ちください。');
+      
+      // データを再取得（簡易版）
+      window.location.reload();
+
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '応募に失敗しました');
+    } finally {
+      setApplyingTo(null);
+    }
+  };
+
+  // 既に応募済みかチェック
+  const isAlreadyApplied = (request: EmergencyRequest) => {
+    return request.emergency_volunteers?.some(volunteer => 
+      volunteer.user_id === currentUser?.id
+    );
+  };
+
+  // 緊急度を判定
+  const getUrgencyLevel = (date: string) => {
+    const requestDate = new Date(date);
+    const today = new Date();
+    const diffDays = Math.ceil((requestDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (diffDays <= 1) return 'urgent'; // 当日・翌日
+    if (diffDays <= 3) return 'soon'; // 3日以内
+    return 'normal'; // それ以降
+  };
+
+  // 緊急度に応じたスタイル
+  const getUrgencyStyle = (urgency: string) => {
+    switch (urgency) {
+      case 'urgent':
+        return 'border-red-300 bg-red-50';
+      case 'soon':
+        return 'border-yellow-300 bg-yellow-50';
+      default:
+        return 'border-gray-200 bg-white';
+    }
+  };
+
+  // 緊急度ラベル
+  const getUrgencyLabel = (urgency: string) => {
+    switch (urgency) {
+      case 'urgent':
+        return { text: '緊急', color: 'text-red-600 bg-red-100' };
+      case 'soon':
+        return { text: '急募', color: 'text-yellow-600 bg-yellow-100' };
+      default:
+        return { text: '募集中', color: 'text-blue-600 bg-blue-100' };
+    }
+  };
+
   if (loading) {
     return (
       <AuthenticatedLayout>
@@ -180,7 +270,20 @@ export default function StaffDashboardPage() {
     return (
       <AuthenticatedLayout>
         <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-          <p className="text-red-700">{error}</p>
+          <div className="flex items-center">
+            <svg className="w-5 h-5 text-red-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <p className="text-red-700">{error}</p>
+            <button 
+              onClick={() => setError(null)}
+              className="ml-auto text-red-400 hover:text-red-600"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
       </AuthenticatedLayout>
     );
@@ -189,28 +292,30 @@ export default function StaffDashboardPage() {
   return (
     <AuthenticatedLayout>
       <div className="space-y-6">
-        {/* ヘッダー */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">
-              おかえりなさい、{currentUser?.name}さん
-            </h1>
-            <p className="text-gray-600 mt-2">{todayString}</p>
+        {/* エラー表示 */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+            <div className="flex items-center">
+              <svg className="w-5 h-5 text-red-400 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-red-700">{error}</p>
+              <button 
+                onClick={() => setError(null)}
+                className="ml-auto text-red-400 hover:text-red-600"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <div className="flex gap-3">
-            <Button
-              variant="secondary"
-              onClick={() => router.push('/request-off')}
-            >
-              希望休申請
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={() => router.push('/my-shift')}
-            >
-              シフト確認
-            </Button>
-          </div>
+        )}
+
+        {/* ページヘッダー */}
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">スタッフダッシュボード</h1>
+          <p className="text-gray-600 mt-2">こんにちは、{currentUser?.name}さん</p>
         </div>
 
         {/* 今日のシフト */}
@@ -355,26 +460,57 @@ export default function StaffDashboardPage() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {emergencyRequests.slice(0, 3).map((request) => (
-                    <div key={request.id} className="border border-gray-200 rounded-lg p-3">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="font-medium text-gray-900">
-                            {new Date(request.date).toLocaleDateString('ja-JP')}
-                          </p>
-                          <p className="text-sm text-gray-600">
-                            {request.shift_patterns?.name} ({request.shift_patterns?.start_time} - {request.shift_patterns?.end_time})
-                          </p>
-                          <p className="text-sm text-gray-500 mt-1">
-                            {request.stores?.name}
-                          </p>
+                  {emergencyRequests.slice(0, 3).map((request) => {
+                    const urgency = getUrgencyLevel(request.date);
+                    const urgencyStyle = getUrgencyStyle(urgency);
+                    const urgencyLabel = getUrgencyLabel(urgency);
+                    const alreadyApplied = isAlreadyApplied(request);
+                    
+                    return (
+                      <div key={request.id} className={`border rounded-lg p-3 ${urgencyStyle}`}>
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <p className="font-medium text-gray-900">
+                                {new Date(request.date).toLocaleDateString('ja-JP', {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  weekday: 'short'
+                                })}
+                              </p>
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${urgencyLabel.color}`}>
+                                {urgencyLabel.text}
+                              </span>
+                            </div>
+                            <p className="text-sm text-gray-600">
+                              {request.shift_patterns?.name} ({request.shift_patterns?.start_time} - {request.shift_patterns?.end_time})
+                            </p>
+                            <p className="text-sm text-gray-500 mt-1">
+                              {request.stores?.name}
+                            </p>
+                            <p className="text-xs text-gray-400 mt-1">
+                              理由: {request.reason}
+                            </p>
+                          </div>
+                          <div className="ml-3">
+                            {alreadyApplied ? (
+                              <div className="text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full">
+                                応募済み
+                              </div>
+                            ) : (
+                              <Button 
+                                size="sm" 
+                                onClick={() => handleApplyEmergency(request.id)}
+                                disabled={applyingTo === request.id}
+                              >
+                                {applyingTo === request.id ? '応募中...' : '参加'}
+                              </Button>
+                            )}
+                          </div>
                         </div>
-                        <Button size="sm">
-                          参加
-                        </Button>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </CardContent>

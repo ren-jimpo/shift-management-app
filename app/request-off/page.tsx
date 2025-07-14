@@ -1,10 +1,21 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+
+// ユーザー型定義
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: 'manager' | 'staff';
+  loginId: string;
+  stores: string[];
+}
 
 // APIから取得するデータ用の型
 interface ApiTimeOffRequest {
@@ -40,10 +51,11 @@ interface DisplayTimeOffRequest {
   respondedByName?: string;
 }
 
-// 仮の現在ユーザー（実際にはAuth0やFirebaseから取得）
-const CURRENT_USER_ID = 'current-user-id';
-
 export default function RequestOffPage() {
+  // 認証関連のstate
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const router = useRouter();
+
   // データベースから取得するstate
   const [requests, setRequests] = useState<DisplayTimeOffRequest[]>([]);
   
@@ -56,11 +68,30 @@ export default function RequestOffPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // 認証チェックとユーザー情報取得
+  useEffect(() => {
+    const userInfo = localStorage.getItem('currentUser');
+    if (!userInfo) {
+      router.push('/login');
+      return;
+    }
+
+    try {
+      const user = JSON.parse(userInfo);
+      setCurrentUser(user);
+    } catch (error) {
+      console.error('ユーザー情報の解析に失敗:', error);
+      router.push('/login');
+    }
+  }, [router]);
+
   // データ取得関数
   const fetchTimeOffRequests = async () => {
+    if (!currentUser) return [];
+    
     try {
       // 現在のユーザーの申請のみ取得
-      const response = await fetch(`/api/time-off-requests?user_id=${CURRENT_USER_ID}`);
+      const response = await fetch(`/api/time-off-requests?user_id=${currentUser.id}`);
       if (!response.ok) throw new Error('希望休申請データの取得に失敗しました');
       const result = await response.json();
       
@@ -86,6 +117,8 @@ export default function RequestOffPage() {
 
   // 初期データ読み込み
   useEffect(() => {
+    if (!currentUser) return;
+    
     const loadInitialData = async () => {
       try {
         setLoading(true);
@@ -102,13 +135,21 @@ export default function RequestOffPage() {
     };
 
     loadInitialData();
-  }, []);
+  }, [currentUser]);
 
   // 申請送信
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
     setError(null);
+
+    // ユーザー認証チェック
+    if (!currentUser) {
+      setError('ログインが必要です');
+      setIsSubmitting(false);
+      router.push('/login');
+      return;
+    }
 
     // フロントエンド側バリデーション
     const trimmedReason = reason.trim();
@@ -145,7 +186,7 @@ export default function RequestOffPage() {
 
     try {
       const requestData = {
-        user_id: CURRENT_USER_ID,
+        user_id: currentUser?.id,
         date: selectedDate,
         reason: trimmedReason
       };

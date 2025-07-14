@@ -15,6 +15,11 @@ interface ApiStore {
       [timeSlot: string]: number;
     };
   };
+  work_rules?: {
+    max_weekly_hours?: number;
+    max_consecutive_days?: number;
+    min_rest_hours?: number;
+  } | null;
   user_stores?: Array<{
     user_id: string;
     is_flexible: boolean;
@@ -47,6 +52,11 @@ interface DisplayStore {
       [timeSlot: string]: number;
     };
   };
+  workRules: {
+    maxWeeklyHours: number;
+    maxConsecutiveDays: number;
+    minRestHours: number;
+  };
   flexibleStaff: string[];
 }
 
@@ -74,6 +84,11 @@ export default function StoreSettingsPage() {
   // フォーム用state
   const [requiredStaffData, setRequiredStaffData] = useState<{[day: string]: {[timeSlot: string]: number}}>({});
   const [flexibleStaffData, setFlexibleStaffData] = useState<string[]>([]);
+  const [workRulesData, setWorkRulesData] = useState({
+    maxWeeklyHours: 28,
+    maxConsecutiveDays: 7,
+    minRestHours: 11
+  });
 
   const timeSlots = ['morning', 'lunch', 'evening'];
   const dayNames = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
@@ -91,6 +106,11 @@ export default function StoreSettingsPage() {
         id: store.id,
         name: store.name,
         requiredStaff: store.required_staff || {},
+        workRules: {
+          maxWeeklyHours: store.work_rules?.max_weekly_hours || 28,
+          maxConsecutiveDays: store.work_rules?.max_consecutive_days || 7,
+          minRestHours: store.work_rules?.min_rest_hours || 11
+        },
         flexibleStaff: store.user_stores?.filter(us => us.is_flexible).map(us => us.user_id) || []
       })) || [];
       
@@ -159,6 +179,7 @@ export default function StoreSettingsPage() {
     if (currentStore) {
       setRequiredStaffData(currentStore.requiredStaff);
       setFlexibleStaffData(currentStore.flexibleStaff);
+      setWorkRulesData(currentStore.workRules);
     }
   }, [selectedStore, stores]);
 
@@ -170,7 +191,7 @@ export default function StoreSettingsPage() {
     setError(null);
 
     try {
-      // 1. 必要人数設定の更新
+      // 1. 必要人数設定と勤怠ルールの更新
       const storeResponse = await fetch('/api/stores', {
         method: 'PUT',
         headers: {
@@ -178,7 +199,12 @@ export default function StoreSettingsPage() {
         },
         body: JSON.stringify({
           id: selectedStore,
-          required_staff: requiredStaffData
+          required_staff: requiredStaffData,
+          work_rules: {
+            max_weekly_hours: workRulesData.maxWeeklyHours,
+            max_consecutive_days: workRulesData.maxConsecutiveDays,
+            min_rest_hours: workRulesData.minRestHours
+          }
         }),
       });
 
@@ -210,6 +236,7 @@ export default function StoreSettingsPage() {
           ? {
               ...store,
               requiredStaff: requiredStaffData,
+              workRules: workRulesData,
               flexibleStaff: flexibleStaffData
             }
           : store
@@ -241,6 +268,14 @@ export default function StoreSettingsPage() {
     } else {
       setFlexibleStaffData(prev => prev.filter(id => id !== userId));
     }
+  };
+
+  // 勤怠ルールの変更
+  const handleWorkRulesChange = (field: keyof typeof workRulesData, value: number) => {
+    setWorkRulesData({
+      ...workRulesData,
+      [field]: value
+    });
   };
 
   const getTimeSlotLabel = (slot: string) => {
@@ -400,6 +435,105 @@ export default function StoreSettingsPage() {
                     <li>• 繁忙時間帯（ランチ、ディナー）は多めに設定することをお勧めします</li>
                     <li>• 0を設定すると該当時間帯は営業していないことを表します</li>
                   </ul>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* 勤怠ルール設定 */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center space-x-2">
+                  <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.268 15.5c-.77.833.192 2.5 1.732 2.5z" />
+                  </svg>
+                  <span>勤怠ルール設定</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-6">
+                  <p className="text-sm text-gray-600">
+                    シフト作成時に自動で警告される勤怠ルールを設定してください
+                  </p>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        週間上限時間
+                      </label>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          min="1"
+                          max="40"
+                          value={workRulesData.maxWeeklyHours}
+                          onChange={(e) => handleWorkRulesChange('maxWeeklyHours', parseInt(e.target.value) || 28)}
+                          className="pr-12"
+                          disabled={isSaving}
+                        />
+                        <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-sm text-gray-500">
+                          時間
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        週28時間を超える場合に警告
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        連続勤務上限日数
+                      </label>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          min="1"
+                          max="14"
+                          value={workRulesData.maxConsecutiveDays}
+                          onChange={(e) => handleWorkRulesChange('maxConsecutiveDays', parseInt(e.target.value) || 7)}
+                          className="pr-12"
+                          disabled={isSaving}
+                        />
+                        <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-sm text-gray-500">
+                          日
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        7日連続勤務で警告
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        最低休息時間
+                      </label>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          min="8"
+                          max="24"
+                          value={workRulesData.minRestHours}
+                          onChange={(e) => handleWorkRulesChange('minRestHours', parseInt(e.target.value) || 11)}
+                          className="pr-12"
+                          disabled={isSaving}
+                        />
+                        <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-sm text-gray-500">
+                          時間
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        勤務間隔11時間未満で警告
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-amber-50 rounded-xl">
+                    <h4 className="font-medium text-amber-900 mb-2">勤怠ルールについて</h4>
+                    <ul className="text-sm text-amber-800 space-y-1">
+                      <li>• これらのルールに違反する場合、シフト作成時に警告が表示されます</li>
+                      <li>• 警告が表示されてもシフトの保存は可能ですが、労働基準法の遵守をお勧めします</li>
+                      <li>• 設定値は店舗ごとに個別に管理されます</li>
+                    </ul>
+                  </div>
                 </div>
               </CardContent>
             </Card>
