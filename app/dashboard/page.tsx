@@ -83,6 +83,7 @@ export default function DashboardPage() {
   const [recentRequests, setRecentRequests] = useState<DashboardTimeOffRequest[]>([]);
   const [emergencyRequests, setEmergencyRequests] = useState<DatabaseEmergencyRequest[]>([]);
   const [users, setUsers] = useState<DatabaseUser[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [shiftPatterns, setShiftPatterns] = useState<DashboardShiftPattern[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
@@ -449,13 +450,13 @@ export default function DashboardPage() {
                             </div>
                             {volunteerCount > 0 && (
                               <div className="flex -space-x-1">
-                                {request.emergency_volunteers?.slice(0, 3).map((volunteer: any, index: number) => (
+                                {request.emergency_volunteers?.slice(0, 3).map((volunteer) => (
                                   <div 
                                     key={volunteer.id}
                                     className="w-6 h-6 bg-blue-100 border-2 border-white rounded-full flex items-center justify-center text-xs font-medium text-blue-600"
-                                    title={volunteer.users?.name || '不明'}
+                                    title={volunteer.user?.name || '不明'}
                                   >
-                                    {volunteer.users?.name?.charAt(0) || '?'}
+                                    {volunteer.user?.name?.charAt(0) || '?'}
                                   </div>
                                 ))}
                                 {volunteerCount > 3 && (

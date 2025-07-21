@@ -150,9 +150,9 @@ export default function StaffDashboardPage() {
   const calculateWeeklyHours = () => {
     return weeklyShifts.reduce((total, shift) => {
       if (!shift.shift_patterns) return total;
-      const start = new Date(`2000-01-01T${shift.shift_patterns.start_time}`);
-      const end = new Date(`2000-01-01T${shift.shift_patterns.end_time}`);
-      const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+        const start = new Date(`2000-01-01T${shift.shift_patterns.start_time}`);
+        const end = new Date(`2000-01-01T${shift.shift_patterns.end_time}`);
+        const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
       return total + hours;
     }, 0);
   };
@@ -466,7 +466,7 @@ export default function StaffDashboardPage() {
                     return (
                       <div key={request.id} className={`border rounded-lg p-3 sm:p-4 ${urgencyStyle}`}>
                         <div className="space-y-2">
-                          <div className="flex items-start justify-between">
+                        <div className="flex items-start justify-between">
                             <div className="flex items-center gap-2 flex-wrap">
                               <p className="font-medium text-gray-900 text-sm sm:text-base">
                                 {new Date(request.date).toLocaleDateString('ja-JP', {
@@ -480,24 +480,24 @@ export default function StaffDashboardPage() {
                               </span>
                             </div>
                             <div className="ml-2 flex-shrink-0">
-                              {alreadyApplied ? (
-                                <div className="text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full">
-                                  応募済み
-                                </div>
+                            {alreadyApplied ? (
+                              <div className="text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full">
+                                応募済み
+                              </div>
                               ) : hasShiftOnDate(request.date) ? (
                                 <div className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
                                   シフト有り
                                 </div>
-                              ) : (
-                                <Button 
-                                  size="sm" 
-                                  onClick={() => handleApplyEmergency(request.id)}
-                                  disabled={applyingTo === request.id}
+                            ) : (
+                              <Button 
+                                size="sm" 
+                                onClick={() => handleApplyEmergency(request.id)}
+                                disabled={applyingTo === request.id}
                                   className="text-xs px-3 py-1 h-auto min-h-[32px] min-w-[60px]"
-                                >
-                                  {applyingTo === request.id ? '応募中...' : '参加'}
-                                </Button>
-                              )}
+                              >
+                                {applyingTo === request.id ? '応募中...' : '参加'}
+                              </Button>
+                            )}
                             </div>
                           </div>
                           <div className="space-y-1">

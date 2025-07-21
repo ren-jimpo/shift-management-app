@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -53,7 +53,7 @@ interface TimeOffRequest {
   createdAt: string;
 }
 
-export default function ShiftCreatePage() {
+function ShiftCreatePageInner() {
   // 今週の月曜日を取得する関数
   const getCurrentWeekMonday = () => {
     const today = new Date();
@@ -123,6 +123,7 @@ export default function ShiftCreatePage() {
   // 応募者管理関連のstate
   const [emergencyManagement, setEmergencyManagement] = useState<{
     show: boolean;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     request: any;
   }>({ show: false, request: null });
   const [processingVolunteer, setProcessingVolunteer] = useState('');
@@ -493,7 +494,7 @@ export default function ShiftCreatePage() {
       setError('店舗を選択してください');
       return;
     }
-
+    
     setModalData({ date, timeSlot, dayIndex });
     setSelectedUser('');
     setSelectedPattern('');
@@ -984,7 +985,7 @@ export default function ShiftCreatePage() {
          endTime: shift.shift_patterns?.endTime || ''
        }));
        
-       return {
+        return {
          hasConflict: conflicts.length > 0,
          conflicts: conflicts,
          hasOtherStoreConflict: conflicts.some((c: { isSameStore: boolean }) => !c.isSameStore),
@@ -1223,7 +1224,8 @@ export default function ShiftCreatePage() {
           ...prev,
           request: prev.request ? {
             ...prev.request,
-            emergency_volunteers: prev.request.emergency_volunteers?.filter((v: any) => v.id !== volunteerId)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        emergency_volunteers: prev.request.emergency_volunteers?.filter((v: any) => v.id !== volunteerId)
           } : null
         }));
         
@@ -1772,22 +1774,22 @@ export default function ShiftCreatePage() {
                     {availableStaff
                       .filter(user => !staffWithConfirmedShifts.includes(user.id)) // 確定済みシフトがあるスタッフを除外
                       .map(user => {
-                        const isOnTimeOff = isStaffOnTimeOff(user.id, modalData.date);
+                      const isOnTimeOff = isStaffOnTimeOff(user.id, modalData.date);
                         
-                        return (
-                          <option 
-                            key={user.id} 
-                            value={user.id} 
-                            disabled={isOnTimeOff}
-                            style={isOnTimeOff ? { color: '#9CA3AF', backgroundColor: '#F3F4F6' } : {}}
-                          >
-                            {user.name} ({user.skillLevel === 'veteran' ? 'ベテラン' : user.skillLevel === 'regular' ? '一般' : '研修中'})
-                            {isOnTimeOff && ' [希望休承認済み]'}
-                          </option>
-                        );
-                      })}
+                      return (
+                        <option 
+                          key={user.id} 
+                          value={user.id} 
+                          disabled={isOnTimeOff}
+                          style={isOnTimeOff ? { color: '#9CA3AF', backgroundColor: '#F3F4F6' } : {}}
+                        >
+                          {user.name} ({user.skillLevel === 'veteran' ? 'ベテラン' : user.skillLevel === 'regular' ? '一般' : '研修中'})
+                          {isOnTimeOff && ' [希望休承認済み]'}
+                        </option>
+                      );
+                    })}
                   </select>
-
+                  
                   
                   {/* 希望休承認済みスタッフの警告表示 */}
                   {availableStaff.some(user => isStaffOnTimeOff(user.id, modalData.date)) && (
@@ -2025,7 +2027,7 @@ export default function ShiftCreatePage() {
                     <p className="text-gray-600">シフト</p>
                     <p className="font-medium">
                       {emergencyManagement.request.shift_patterns?.name || '不明なシフト'} 
-                      ({emergencyManagement.request.shift_patterns?.start_time || '00:00'}-{emergencyManagement.request.shift_patterns?.end_time || '00:00'})
+                      ({emergencyManagement.request.shift_patterns?.startTime || '00:00'}-{emergencyManagement.request.shift_patterns?.endTime || '00:00'})
                     </p>
                   </div>
                   <div>
@@ -2047,7 +2049,8 @@ export default function ShiftCreatePage() {
                 
                 {emergencyManagement.request.emergency_volunteers && emergencyManagement.request.emergency_volunteers.length > 0 ? (
                   <div className="space-y-3">
-                    {emergencyManagement.request.emergency_volunteers.map((volunteer: any) => (
+                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+        {emergencyManagement.request.emergency_volunteers.map((volunteer: any) => (
                       <div key={volunteer.id} className="border border-gray-200 rounded-lg p-4">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center space-x-3">
@@ -2123,4 +2126,12 @@ export default function ShiftCreatePage() {
       </div>
     </AuthenticatedLayout>
   );
-} 
+}
+
+export default function ShiftCreatePage() {
+  return (
+    <Suspense fallback={<div>読み込み中...</div>}>
+      <ShiftCreatePageInner />
+    </Suspense>
+  );
+}

@@ -105,15 +105,15 @@ export async function POST(request: NextRequest) {
       const confirmedShift = existingShifts.find(shift => shift.status === 'confirmed');
       if (confirmedShift) {
         const storeData = confirmedShift.stores as { name?: string } | null;
-        return NextResponse.json(
-          { 
+      return NextResponse.json(
+        { 
             error: 'Cannot create shift: User has a confirmed shift on this date',
-            conflictingStore: storeData?.name || '不明な店舗',
+          conflictingStore: storeData?.name || '不明な店舗',
             conflictingStoreId: confirmedShift.store_id,
             conflictType: 'confirmed'
-          },
-          { status: 409 }
-        );
+        },
+        { status: 409 }
+      );
       }
 
       // 新規シフトが確定の場合、既存の下書きシフトを削除

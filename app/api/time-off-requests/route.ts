@@ -206,7 +206,7 @@ export async function DELETE(request: NextRequest) {
     console.error('Unexpected error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
-}
+} 
 
 // PATCH - 希望休申請一括承認・却下
 export async function PATCH(request: NextRequest) {
