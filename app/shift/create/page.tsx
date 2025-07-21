@@ -5,6 +5,7 @@ import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import type { Shift, ShiftPattern } from '@/lib/types';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 interface ShiftModalData {
   date: string;
@@ -127,6 +128,16 @@ export default function ShiftCreatePage() {
   }>({ show: false, shift: null });
   const [emergencyReason, setEmergencyReason] = useState('');
   const [submittingEmergency, setSubmittingEmergency] = useState(false);
+
+  // 応募者管理関連のstate
+  const [emergencyManagement, setEmergencyManagement] = useState<{
+    show: boolean;
+    request: any;
+  }>({ show: false, request: null });
+  const [processingVolunteer, setProcessingVolunteer] = useState('');
+
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
   // データ取得関数
   const fetchStores = async () => {
@@ -308,6 +319,12 @@ export default function ShiftCreatePage() {
         if (storesData.length > 0) {
           setSelectedStore(storesData[0].id);
         }
+
+        // URLパラメータで代打募集管理が指定されている場合
+        const emergencyParam = searchParams.get('emergency');
+        if (emergencyParam) {
+          await handleEmergencyManagement(emergencyParam);
+        }
         
       } catch (error) {
         setError(error instanceof Error ? error.message : '初期データの読み込みに失敗しました');
@@ -317,7 +334,7 @@ export default function ShiftCreatePage() {
     };
 
     loadInitialData();
-  }, []);
+  }, [searchParams]);
 
   // 選択された店舗または週が変更された時にシフトデータを取得
   useEffect(() => {
@@ -1160,6 +1177,75 @@ export default function ShiftCreatePage() {
     handleCloseContextMenu();
   };
 
+  // 代打募集管理画面を開く
+  const handleEmergencyManagement = async (emergencyRequestId: string) => {
+    try {
+      const response = await fetch(`/api/emergency-requests?id=${emergencyRequestId}`);
+      if (!response.ok) throw new Error('代打募集データの取得に失敗しました');
+      const result = await response.json();
+      
+      if (result.data) {
+        setEmergencyManagement({ show: true, request: result.data });
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '代打募集データの取得に失敗しました');
+    }
+  };
+
+  // 応募者承認・却下処理
+  const handleVolunteerAction = async (requestId: string, volunteerId: string, action: 'accept' | 'reject') => {
+    setProcessingVolunteer(volunteerId);
+    
+    try {
+      const response = await fetch('/api/emergency-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          emergency_request_id: requestId,
+          volunteer_id: volunteerId,
+          action: action
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `代打の${action === 'accept' ? '確定' : '削除'}に失敗しました`);
+      }
+
+      const result = await response.json();
+
+      if (action === 'accept') {
+        // 代打確定時の処理
+        const volunteerName = result.data.volunteer?.users?.name || '代打スタッフ';
+        const originalUserName = result.data.emergency_request?.original_user?.name || '元の担当者';
+        
+        alert(`代打を確定しました。\n${originalUserName} → ${volunteerName}\nシフト表が自動更新されました。`);
+        
+        // 管理画面を閉じてシフト画面に戻る
+        setEmergencyManagement({ show: false, request: null });
+        router.push('/shift/create');
+      } else {
+        // 応募者削除時の処理
+        setEmergencyManagement(prev => ({
+          ...prev,
+          request: prev.request ? {
+            ...prev.request,
+            emergency_volunteers: prev.request.emergency_volunteers?.filter((v: any) => v.id !== volunteerId)
+          } : null
+        }));
+        
+        alert('応募者を削除しました。');
+      }
+
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '処理に失敗しました');
+    } finally {
+      setProcessingVolunteer('');
+    }
+  };
+
   // ローディング表示
   if (loading) {
     return (
@@ -1890,6 +1976,141 @@ export default function ShiftCreatePage() {
                     )}
                   </Button>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 応募者管理モーダル */}
+        {emergencyManagement.show && emergencyManagement.request && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-semibold text-gray-900">代打募集管理</h3>
+                <button
+                  onClick={() => setEmergencyManagement({ show: false, request: null })}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* 募集情報 */}
+              <div className="p-4 bg-gray-50 rounded-lg mb-6">
+                <h4 className="font-medium text-gray-900 mb-2">募集内容</h4>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <p className="text-gray-600">店舗</p>
+                    <p className="font-medium">{emergencyManagement.request.stores?.name || '不明な店舗'}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-600">日時</p>
+                    <p className="font-medium">
+                      {new Date(emergencyManagement.request.date).toLocaleDateString('ja-JP', {
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric',
+                        weekday: 'long'
+                      })}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-gray-600">シフト</p>
+                    <p className="font-medium">
+                      {emergencyManagement.request.shift_patterns?.name || '不明なシフト'} 
+                      ({emergencyManagement.request.shift_patterns?.start_time || '00:00'}-{emergencyManagement.request.shift_patterns?.end_time || '00:00'})
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-gray-600">元の担当者</p>
+                    <p className="font-medium">{emergencyManagement.request.original_user?.name || '不明なユーザー'}</p>
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <p className="text-gray-600">理由</p>
+                  <p className="font-medium">{emergencyManagement.request.reason}</p>
+                </div>
+              </div>
+
+              {/* 応募者一覧 */}
+              <div>
+                <h4 className="font-medium text-gray-900 mb-4">
+                  応募者一覧 ({emergencyManagement.request.emergency_volunteers?.length || 0}名)
+                </h4>
+                
+                {emergencyManagement.request.emergency_volunteers && emergencyManagement.request.emergency_volunteers.length > 0 ? (
+                  <div className="space-y-3">
+                    {emergencyManagement.request.emergency_volunteers.map((volunteer: any) => (
+                      <div key={volunteer.id} className="border border-gray-200 rounded-lg p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-3">
+                            <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                              <span className="text-blue-600 font-medium text-sm">
+                                {volunteer.users?.name?.charAt(0) || '?'}
+                              </span>
+                            </div>
+                            <div>
+                              <p className="font-medium text-gray-900">{volunteer.users?.name || '不明なユーザー'}</p>
+                              <p className="text-sm text-gray-500">
+                                {volunteer.users?.skill_level === 'veteran' ? 'ベテラン' :
+                                 volunteer.users?.skill_level === 'regular' ? '一般' : '研修中'}
+                              </p>
+                              <p className="text-xs text-gray-400">
+                                応募日時: {new Date(volunteer.responded_at).toLocaleString('ja-JP')}
+                              </p>
+                            </div>
+                          </div>
+                          
+                          <div className="flex space-x-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleVolunteerAction(emergencyManagement.request.id, volunteer.id, 'accept')}
+                              disabled={processingVolunteer === volunteer.id}
+                              className="bg-green-600 hover:bg-green-700"
+                            >
+                              {processingVolunteer === volunteer.id ? (
+                                <>
+                                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                                  確定中...
+                                </>
+                              ) : (
+                                '採用'
+                              )}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => handleVolunteerAction(emergencyManagement.request.id, volunteer.id, 'reject')}
+                              disabled={processingVolunteer === volunteer.id}
+                              className="border-red-300 text-red-600 hover:bg-red-50"
+                            >
+                              削除
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-12 text-gray-500">
+                    <svg className="w-16 h-16 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                    </svg>
+                    <p className="text-lg font-medium mb-2">応募者がいません</p>
+                    <p className="text-sm">まだ誰も応募していません。しばらくお待ちください。</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end mt-6">
+                <Button
+                  variant="secondary"
+                  onClick={() => setEmergencyManagement({ show: false, request: null })}
+                >
+                  閉じる
+                </Button>
               </div>
             </div>
           </div>

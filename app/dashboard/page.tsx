@@ -52,6 +52,15 @@ interface DashboardStore {
   };
 }
 
+interface DashboardShiftPattern {
+  id: string;
+  name: string;
+  start_time: string;
+  end_time: string;
+  color: string;
+  break_time: number;
+}
+
 interface DashboardEmergencyRequest {
   id: string;
   original_user_id: string;
@@ -74,16 +83,17 @@ export default function DashboardPage() {
   const [recentRequests, setRecentRequests] = useState<DashboardTimeOffRequest[]>([]);
   const [emergencyRequests, setEmergencyRequests] = useState<any[]>([]);
   const [users, setUsers] = useState<DatabaseUser[]>([]);
+  const [shiftPatterns, setShiftPatterns] = useState<DashboardShiftPattern[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
-
+  
   useEffect(() => {
     loadDashboardData();
   }, []);
 
-  const loadDashboardData = async () => {
-    try {
-      setIsLoading(true);
+    const loadDashboardData = async () => {
+      try {
+        setIsLoading(true);
 
       // 並列でデータを取得
       const [
@@ -91,7 +101,8 @@ export default function DashboardPage() {
         { data: requestsData },
         { data: emergencyData },
         { data: usersData },
-        { data: storesData }
+        { data: storesData },
+        { data: shiftPatternsData }
       ] = await Promise.all([
         supabase.from('shifts').select('*'),
         supabase.from('time_off_requests').select('*'),
@@ -114,7 +125,8 @@ export default function DashboardPage() {
             stores (*)
           )
         `),
-        supabase.from('stores').select('*')
+        supabase.from('stores').select('*'),
+        supabase.from('shift_patterns').select('*')
       ]);
 
       // 今日の日付
@@ -133,24 +145,52 @@ export default function DashboardPage() {
         totalStaff: usersData?.length || 0
       });
 
+      // 時間帯別の枠判定を行うヘルパー関数
+      const getTimeSlotForPattern = (patternId: string): string | null => {
+        const pattern = (shiftPatternsData as DashboardShiftPattern[])?.find(p => p.id === patternId);
+        if (!pattern) return null;
+
+        const startTime = pattern.start_time.split(':').map(Number);
+        if (startTime.length < 2 || isNaN(startTime[0]) || isNaN(startTime[1])) return null;
+
+        const startMinutes = startTime[0] * 60 + startTime[1];
+
+        // 時間帯の判定（開始時間ベース）
+        if (startMinutes >= 480 && startMinutes < 660) return 'morning';   // 8:00-11:00
+        if (startMinutes >= 660 && startMinutes < 960) return 'lunch';     // 11:00-16:00
+        if (startMinutes >= 960 && startMinutes < 1320) return 'evening';  // 16:00-22:00
+        
+        return null;
+      };
+
       // 店舗別スタッフィング状況
       const staffingData = (storesData as DashboardStore[] || []).map(store => {
-        const storeShifts = todayShifts.filter(shift => shift.store_id === store.id);
-        
-        // 今日の曜日を取得（日本語の曜日名に変換）
-        const today = new Date();
-        const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const storeShifts = todayShifts.filter(shift => shift.store_id === store.id);
+    
+    // 今日の曜日を取得
+    const today = new Date();
+    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
         const todayDayName = dayNames[today.getDay()];
         
         // 各時間帯の必要人数を取得
-        let totalRequired = 0;
         const timeSlots = ['morning', 'lunch', 'evening'];
+        let totalRequired = 0;
+        let allSlotsSufficient = true;
         
         if (store.required_staff && store.required_staff[todayDayName]) {
           const dayRequiredStaff = store.required_staff[todayDayName];
+          
           timeSlots.forEach(slot => {
-            if (dayRequiredStaff[slot] && typeof dayRequiredStaff[slot] === 'number') {
-              totalRequired += dayRequiredStaff[slot];
+            const required = dayRequiredStaff[slot] && typeof dayRequiredStaff[slot] === 'number' 
+              ? dayRequiredStaff[slot] : 0;
+            totalRequired += required;
+            
+            // この時間帯に配置されているシフト数を計算
+            const slotShifts = storeShifts.filter(shift => getTimeSlotForPattern(shift.pattern_id) === slot);
+            
+            // この時間帯が不足している場合
+            if (slotShifts.length < required) {
+              allSlotsSufficient = false;
             }
           });
         }
@@ -164,7 +204,7 @@ export default function DashboardPage() {
           store: store.name,
           scheduled: storeShifts.length,
           required: totalRequired,
-          status: storeShifts.length >= totalRequired ? 'sufficient' : 'insufficient'
+          status: allSlotsSufficient ? 'sufficient' : 'insufficient'
         } as StoreStaffing;
       });
 
@@ -172,6 +212,7 @@ export default function DashboardPage() {
       setRecentRequests((requestsData as DashboardTimeOffRequest[])?.slice(0, 3) || []);
       setEmergencyRequests(openEmergencies.slice(0, 3) || []);
       setUsers((usersData as DatabaseUser[]) || []);
+      setShiftPatterns((shiftPatternsData as DashboardShiftPattern[]) || []);
 
     } catch (error) {
       console.error('Dashboard data loading error:', error);
@@ -263,24 +304,24 @@ export default function DashboardPage() {
               <CardTitle>今日の店舗別出勤状況</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
+                <div className="space-y-4">
                 {storeStaffing.map((staffing, index) => (
                   <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                    <div>
-                      <p className="font-medium text-gray-900">{staffing.store}</p>
-                      <p className="text-sm text-gray-500">
-                        {staffing.scheduled} / {staffing.required} 人
-                      </p>
-                    </div>
-                    <div className={`px-3 py-1 rounded-full text-sm font-medium ${
+                      <div>
+                        <p className="font-medium text-gray-900">{staffing.store}</p>
+                        <p className="text-sm text-gray-500">
+                          {staffing.scheduled} / {staffing.required} 人
+                        </p>
+                      </div>
+                      <div className={`px-3 py-1 rounded-full text-sm font-medium ${
                       staffing.status === 'sufficient'
-                        ? 'bg-green-100 text-green-800' 
-                        : 'bg-red-100 text-red-800'
-                    }`}>
+                          ? 'bg-green-100 text-green-800' 
+                          : 'bg-red-100 text-red-800'
+                      }`}>
                       {staffing.status === 'sufficient' ? '充足' : '不足'}
                     </div>
-                  </div>
-                ))}
+                    </div>
+                  ))}
               </div>
             </CardContent>
           </Card>
@@ -289,13 +330,13 @@ export default function DashboardPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>最近の希望休申請</CardTitle>
-              <Button 
-                variant="ghost" 
-                size="sm"
+                <Button
+                  variant="ghost"
+                  size="sm"
                 onClick={() => router.push('/requests')}
-              >
+                >
                 すべて表示
-              </Button>
+                </Button>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
@@ -323,8 +364,8 @@ export default function DashboardPage() {
                   })
                 ) : (
                   <p className="text-gray-500 text-center py-4">申請はありません</p>
-                )}
-              </div>
+                  )}
+                </div>
             </CardContent>
           </Card>
 
@@ -332,13 +373,13 @@ export default function DashboardPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>代打募集管理</CardTitle>
-              <Button 
-                variant="ghost" 
-                size="sm"
+                <Button
+                  variant="ghost"
+                  size="sm"
                 onClick={() => router.push('/shift/create')}
-              >
+                >
                 募集作成
-              </Button>
+                </Button>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
@@ -353,33 +394,33 @@ export default function DashboardPage() {
                             <p className="text-sm text-gray-500">
                               {new Date(request.date).toLocaleDateString('ja-JP')}
                             </p>
-                          </div>
+                </div>
                           <div className="flex items-center space-x-2">
                             <span className="px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
                               🆘 募集中
-                            </span>
+                          </span>
                           </div>
                         </div>
                         <p className="text-xs text-gray-600 mb-2">理由: {request.reason}</p>
                         <div className="flex items-center justify-between">
                           <div className="text-xs text-gray-500">
                             応募者: <span className="font-medium">{request.emergency_volunteers?.length || 0}名</span>
-                          </div>
-                          <Button 
-                            size="sm" 
+                              </div>
+                                  <Button
+                                    size="sm"
                             variant="secondary"
                             onClick={() => router.push(`/shift/create?emergency=${request.id}`)}
                           >
                             管理
-                          </Button>
+                                  </Button>
                         </div>
                       </div>
                     );
                   })
                 ) : (
                   <p className="text-gray-500 text-center py-4">代打募集はありません</p>
-                )}
-              </div>
+                  )}
+                </div>
             </CardContent>
           </Card>
         </div>

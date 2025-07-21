@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
+    const id = searchParams.get('id');
     const storeId = searchParams.get('store_id');
     const status = searchParams.get('status');
     const dateFrom = searchParams.get('date_from');
@@ -23,6 +24,19 @@ export async function GET(request: NextRequest) {
           users(id, name, role, skill_level)
         )
       `);
+
+    // 特定のIDで検索する場合
+    if (id) {
+      query = query.eq('id', id);
+      const { data, error } = await query.single();
+      
+      if (error) {
+        console.error('Error fetching emergency request by ID:', error);
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      return NextResponse.json({ data }, { status: 200 });
+    }
 
     // フィルタリング条件を適用
     if (storeId) {
