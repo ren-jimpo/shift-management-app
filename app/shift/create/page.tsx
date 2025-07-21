@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import type { Shift, ShiftPattern } from '@/lib/types';
+import type { Shift, ShiftPattern, DatabaseShift, DatabaseUser, DatabaseEmergencyRequest, UserStore, ContextMenu, EmergencyModal } from '@/lib/types';
 
 interface ShiftModalData {
   date: string;
@@ -113,18 +113,9 @@ export default function ShiftCreatePage() {
   const [saving, setSaving] = useState(false);
 
   // 代打募集関連のstate
-  const [emergencyRequests, setEmergencyRequests] = useState<any[]>([]);
-  const [contextMenu, setContextMenu] = useState<{
-    show: boolean;
-    x: number;
-    y: number;
-    shiftId: string;
-    shift: any;
-  }>({ show: false, x: 0, y: 0, shiftId: '', shift: null });
-  const [emergencyModal, setEmergencyModal] = useState<{
-    show: boolean;
-    shift: any;
-  }>({ show: false, shift: null });
+  const [emergencyRequests, setEmergencyRequests] = useState<DatabaseEmergencyRequest[]>([]);
+  const [contextMenu, setContextMenu] = useState<ContextMenu>({ show: false, x: 0, y: 0, shiftId: '', shift: null });
+  const [emergencyModal, setEmergencyModal] = useState<EmergencyModal>({ show: false, shift: null });
   const [emergencyReason, setEmergencyReason] = useState('');
   const [submittingEmergency, setSubmittingEmergency] = useState(false);
 
@@ -136,11 +127,11 @@ export default function ShiftCreatePage() {
       const result = await response.json();
       
       // API responseをApiStore型に変換し、必要な構造を確保
-      const storesData = result.data?.map((store: any) => ({
+      const storesData = result.data?.map((store: { id: string; name: string; required_staff?: Record<string, Record<string, number>>; user_stores?: { is_flexible: boolean; user_id: string }[] }) => ({
         id: store.id,
         name: store.name,
         requiredStaff: store.required_staff || {},
-        flexibleStaff: store.user_stores?.filter((us: any) => us.is_flexible).map((us: any) => us.user_id) || []
+        flexibleStaff: store.user_stores?.filter((us: { is_flexible: boolean }) => us.is_flexible).map((us: { user_id: string }) => us.user_id) || []
       })) || [];
       
       return storesData;
@@ -157,7 +148,7 @@ export default function ShiftCreatePage() {
       const result = await response.json();
       
       // ユーザーに所属店舗情報を追加
-      const usersWithStores = result.data?.map((user: any) => ({
+      const usersWithStores = result.data?.map((user: DatabaseUser) => ({
         id: user.id,
         name: user.name,
         phone: user.phone,
@@ -165,7 +156,7 @@ export default function ShiftCreatePage() {
         role: user.role,
         skillLevel: user.skill_level,
         memo: user.memo,
-        stores: user.user_stores?.map((us: any) => us.store_id) || []
+        stores: user.user_stores?.map((us: UserStore) => us.store_id) || []
       })) || [];
       
       return usersWithStores;
@@ -182,7 +173,7 @@ export default function ShiftCreatePage() {
       const result = await response.json();
       
       // API response を ShiftPattern 型に変換
-      const patterns = result.data?.map((pattern: any) => ({
+      const patterns = result.data?.map((pattern: { id: string; name: string; start_time: string; end_time: string; color: string; break_time?: number }) => ({
         id: pattern.id,
         name: pattern.name,
         startTime: pattern.start_time,
@@ -213,7 +204,7 @@ export default function ShiftCreatePage() {
       const result = await response.json();
       
       // API response を Shift 型に変換
-      const shifts = result.data?.map((shift: any) => ({
+      const shifts = result.data?.map((shift: { id: string; user_id: string; store_id: string; date: string; pattern_id: string; status: string; notes?: string }) => ({
         id: shift.id,
         userId: shift.user_id,
         storeId: shift.store_id,
@@ -247,7 +238,7 @@ export default function ShiftCreatePage() {
       const result = await response.json();
       
       // API responseをTimeOffRequest型に変換
-      const timeOffData = result.data?.map((request: any) => ({
+      const timeOffData = result.data?.map((request: { id: string; user_id: string; date: string; reason: string; status: string; responded_at?: string; responded_by?: string; created_at: string }) => ({
         id: request.id,
         userId: request.user_id,
         date: request.date,
@@ -489,7 +480,7 @@ export default function ShiftCreatePage() {
     setModalData({ date, timeSlot, dayIndex });
     setSelectedUser('');
     setSelectedPattern('');
-    setStaffShiftStatus(null); // スタッフシフト状況をクリア
+    // setStaffShiftStatus(null); // スタッフシフト状況をクリア（削除済み）
     
     // 該当日の確定済みシフトをチェック
     await checkAllStaffConfirmedShifts(date);
@@ -802,7 +793,7 @@ export default function ShiftCreatePage() {
 
     let consecutiveDays = 1;
     let maxConsecutive = 1;
-    const targetDate = new Date(date);
+    // const targetDate = new Date(date); // 未使用のため削除
 
     for (let i = 1; i < allShifts.length; i++) {
       const prevDate = new Date(allShifts[i - 1].date);
@@ -965,23 +956,23 @@ export default function ShiftCreatePage() {
       const result = await response.json();
       const existingShifts = result.data || [];
       
-             const conflicts = existingShifts.map((shift: any) => ({
+             const conflicts = existingShifts.map((shift: DatabaseShift) => ({
          storeName: shift.stores?.name || '不明な店舗',
          storeId: shift.store_id,
          status: shift.status,
          isConfirmed: shift.status === 'confirmed',
          isSameStore: shift.store_id === selectedStore,
          shiftPattern: shift.shift_patterns?.name || '不明なパターン',
-         startTime: shift.shift_patterns?.start_time || '',
-         endTime: shift.shift_patterns?.end_time || ''
+         startTime: shift.shift_patterns?.startTime || '',
+         endTime: shift.shift_patterns?.endTime || ''
        }));
        
        return {
          hasConflict: conflicts.length > 0,
          conflicts: conflicts,
-         hasOtherStoreConflict: conflicts.some((c: any) => !c.isSameStore),
-         hasSameStoreConflict: conflicts.some((c: any) => c.isSameStore),
-         hasConfirmedConflict: conflicts.some((c: any) => c.isConfirmed)
+         hasOtherStoreConflict: conflicts.some((c: { isSameStore: boolean }) => !c.isSameStore),
+         hasSameStoreConflict: conflicts.some((c: { isSameStore: boolean }) => c.isSameStore),
+         hasConfirmedConflict: conflicts.some((c: { isConfirmed: boolean }) => c.isConfirmed)
        };
     } catch (error) {
       console.error('Error checking staff shift status:', error);
@@ -990,17 +981,17 @@ export default function ShiftCreatePage() {
   };
 
   // スタッフ選択時の競合チェック（下書き・確定関係なく制限）
-  const [staffShiftStatus, setStaffShiftStatus] = useState<any>(null);
+  // const [staffShiftStatus, setStaffShiftStatus] = useState<DatabaseShift | null>(null); // 未使用のため削除
   const [staffWithConfirmedShifts, setStaffWithConfirmedShifts] = useState<string[]>([]);
   
   // スタッフ選択が変更された時の処理
   const handleStaffSelection = async (userId: string) => {
     setSelectedUser(userId);
-    setStaffShiftStatus(null);
+    // setStaffShiftStatus(null); // 未使用のため削除
     
     if (userId && modalData) {
-      const shiftStatus = await checkStaffShiftStatus(userId, modalData.date);
-      setStaffShiftStatus(shiftStatus);
+      await checkStaffShiftStatus(userId, modalData.date);
+      // setStaffShiftStatus(shiftStatus); // 未使用のため削除
     }
   };
 
@@ -1014,7 +1005,7 @@ export default function ShiftCreatePage() {
       const confirmedShifts = result.data || [];
       
       const staffWithConfirmed = confirmedShifts
-        .map((shift: any) => shift.user_id as string)
+        .map((shift: { user_id: string }) => shift.user_id as string)
         .filter((userId: string) => userId);
       setStaffWithConfirmedShifts(Array.from(new Set(staffWithConfirmed)));
     } catch (error) {
@@ -1039,10 +1030,10 @@ export default function ShiftCreatePage() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          original_user_id: emergencyModal.shift.userId,
+          original_user_id: emergencyModal.shift.user_id,
           store_id: selectedStore,
           date: emergencyModal.shift.date,
-          shift_pattern_id: emergencyModal.shift.patternId,
+          shift_pattern_id: emergencyModal.shift.shift_pattern_id,
           reason: emergencyReason.trim()
         }),
       });
@@ -1135,7 +1126,7 @@ export default function ShiftCreatePage() {
   };
 
   // 右クリックメニューを表示
-  const handleShiftRightClick = (e: React.MouseEvent, shift: any) => {
+  const handleShiftRightClick = (e: React.MouseEvent, shift: DatabaseShift) => {
     // 確定済みシフトのみ代打募集可能
     if (shift.status !== 'confirmed') return;
     
@@ -1155,7 +1146,7 @@ export default function ShiftCreatePage() {
   };
 
   // 代打募集モーダルを開く
-  const handleOpenEmergencyModal = (shift: any) => {
+  const handleOpenEmergencyModal = (shift: DatabaseShift) => {
     setEmergencyModal({ show: true, shift });
     handleCloseContextMenu();
   };
@@ -1481,7 +1472,7 @@ export default function ShiftCreatePage() {
                             <td key={dayIndex} className="p-2">
                               <div 
                                 className={`min-h-28 border-2 rounded-xl p-2 cursor-pointer hover:shadow-md transition-all ${cellStyle}`}
-                                onClick={(e) => handleCellClick(dateString, timeSlot.id, date.getDay())}
+                                onClick={() => handleCellClick(dateString, timeSlot.id, date.getDay())}
                               >
                                 {/* 必要人数表示 */}
                                 <div className="flex items-center justify-between mb-2">
@@ -1522,7 +1513,21 @@ export default function ShiftCreatePage() {
                                               isEmergencyRequested ? 'ring-2 ring-red-500 ring-dashed' : ''
                                             }`}
                                             style={{ backgroundColor: pattern.color || '#6B7280' }}
-                                            onContextMenu={(e) => handleShiftRightClick(e, shift)}
+                                            onContextMenu={(e) => {
+                                              // Shift型をDatabaseShift型に変換
+                                              const dbShift: DatabaseShift = {
+                                                id: shift.id,
+                                                user_id: shift.userId,
+                                                store_id: shift.storeId,
+                                                date: shift.date,
+                                                shift_pattern_id: shift.patternId,
+                                                status: shift.status as 'draft' | 'confirmed' | 'completed',
+                                                notes: shift.notes,
+                                                created_at: '',
+                                                updated_at: ''
+                                              };
+                                              handleShiftRightClick(e, dbShift);
+                                            }}
                                           >
                                             <span className="truncate flex items-center">
                                               {user.name || '不明'}
@@ -1811,7 +1816,7 @@ export default function ShiftCreatePage() {
             style={{ left: contextMenu.x, top: contextMenu.y }}
           >
             <button
-              onClick={() => handleOpenEmergencyModal(contextMenu.shift)}
+              onClick={() => contextMenu.shift && handleOpenEmergencyModal(contextMenu.shift)}
               className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center"
             >
               <svg className="w-4 h-4 mr-2 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1842,11 +1847,11 @@ export default function ShiftCreatePage() {
                 <div className="p-3 bg-gray-50 rounded-lg">
                   <p className="text-sm text-gray-600">対象シフト</p>
                   <p className="font-medium text-gray-900">
-                    {users.find(u => u.id === emergencyModal.shift.userId)?.name} - {' '}
-                    {shiftPatterns.find(p => p.id === emergencyModal.shift.patternId)?.name}
+                    {emergencyModal.shift && users.find(u => u.id === emergencyModal.shift!.user_id)?.name} - {' '}
+                    {emergencyModal.shift && shiftPatterns.find(p => p.id === emergencyModal.shift!.shift_pattern_id)?.name}
                   </p>
                   <p className="text-sm text-gray-500">
-                    {new Date(emergencyModal.shift.date).toLocaleDateString('ja-JP', {
+                    {emergencyModal.shift && new Date(emergencyModal.shift.date).toLocaleDateString('ja-JP', {
                       year: 'numeric',
                       month: 'long',
                       day: 'numeric',

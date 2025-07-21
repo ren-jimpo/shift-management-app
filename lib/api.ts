@@ -96,7 +96,7 @@ export const storeApi = {
   create: (storeData: {
     id: string;
     name: string;
-    required_staff: Record<string, any>;
+    required_staff: Record<string, Record<string, number>>;
   }) => {
     return apiRequest('/stores', {
       method: 'POST',
@@ -108,7 +108,7 @@ export const storeApi = {
   update: (storeData: {
     id: string;
     name?: string;
-    required_staff?: Record<string, any>;
+    required_staff?: Record<string, Record<string, number>>;
   }) => {
     return apiRequest('/stores', {
       method: 'PUT',
@@ -370,7 +370,10 @@ export const dateUtils = {
 // メール送信API用の型定義
 export interface EmailRequest {
   type: 'basic' | 'shift-confirmation' | 'time-off-response' | 'emergency-request' | 'notification';
-  [key: string]: any;
+  to: string;
+  subject: string;
+  body: string;
+  [key: string]: unknown;
 }
 
 /**
@@ -409,6 +412,9 @@ export async function sendShiftConfirmationNotification(
 ) {
   return sendEmailNotification({
     type: 'shift-confirmation',
+    to: userEmail,
+    subject: `シフト確認 - ${userName}`,
+    body: '本日のシフトをご確認ください',
     userEmail,
     userName,
     shifts,
@@ -427,6 +433,9 @@ export async function sendTimeOffResponseNotification(
 ) {
   return sendEmailNotification({
     type: 'time-off-response',
+    to: userEmail,
+    subject: `希望休申請${status === 'approved' ? '承認' : '拒否'}通知 - ${userName}`,
+    body: `希望休申請が${status === 'approved' ? '承認' : '拒否'}されました`,
     userEmail,
     userName,
     requestDate,
@@ -451,6 +460,9 @@ export async function sendEmergencyRequestNotification(
 ) {
   return sendEmailNotification({
     type: 'emergency-request',
+    to: userEmails.join(','),
+    subject: `緊急代打募集 - ${details.storeName}`,
+    body: `緊急の代打を募集しています`,
     userEmails,
     details,
   });
@@ -467,6 +479,9 @@ export async function sendGeneralNotification(
 ) {
   return sendEmailNotification({
     type: 'notification',
+    to: userEmail,
+    subject: title,
+    body: message,
     userEmail,
     userName,
     title,
@@ -486,8 +501,9 @@ export async function sendBasicEmail(
 ) {
   return sendEmailNotification({
     type: 'basic',
-    to,
+    to: Array.isArray(to) ? to.join(',') : to,
     subject,
+    body: html || text || '',
     html,
     text,
     from,

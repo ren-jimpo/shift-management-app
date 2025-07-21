@@ -550,7 +550,7 @@ export default function RequestsPage() {
                       const sortedGroup = group.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
                       const firstRequest = sortedGroup[0];
                       const allSameStatus = group.every(r => r.status === firstRequest.status);
-                      const allPending = group.every(r => r.status === 'pending');
+                      // const allPending = group.every(r => r.status === 'pending'); // 未使用のため削除
                       const pendingRequests = group.filter(r => r.status === 'pending');
 
                       return (

@@ -72,10 +72,10 @@ export const checkRateLimit = (
 };
 
 // エラーメッセージの国際化
-export const getErrorMessage = (error: any): string => {
+export const getErrorMessage = (error: Error | { code?: string; message?: string } | string): string => {
   if (typeof error === 'string') return error;
   
-  if (error?.code) {
+  if (error && typeof error === 'object' && 'code' in error) {
     switch (error.code) {
       case '23505':
         return 'このデータは既に存在します';
@@ -88,5 +88,9 @@ export const getErrorMessage = (error: any): string => {
     }
   }
   
-  return error?.message || 'エラーが発生しました';
+  if (error && typeof error === 'object' && 'message' in error) {
+    return error.message || 'エラーが発生しました';
+  }
+  
+  return 'エラーが発生しました';
 }; 

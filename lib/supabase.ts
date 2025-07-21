@@ -47,7 +47,7 @@ export type Database = {
         Row: {
           id: string
           name: string
-          required_staff: Record<string, any>
+          required_staff: Record<string, Record<string, number>>
           work_rules: {
             max_weekly_hours?: number
             max_consecutive_days?: number
@@ -59,7 +59,7 @@ export type Database = {
         Insert: {
           id: string
           name: string
-          required_staff: Record<string, any>
+          required_staff: Record<string, Record<string, number>>
           work_rules?: {
             max_weekly_hours?: number
             max_consecutive_days?: number
@@ -71,7 +71,7 @@ export type Database = {
         Update: {
           id?: string
           name?: string
-          required_staff?: Record<string, any>
+          required_staff?: Record<string, Record<string, number>>
           work_rules?: {
             max_weekly_hours?: number
             max_consecutive_days?: number

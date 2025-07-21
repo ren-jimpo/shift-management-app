@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
     // ユーザー別にシフトをグループ化
     const userShifts = new Map();
     
-    todayShifts.forEach((shift: any) => {
+    todayShifts.forEach((shift: { id: string; user_id: string; date: string; stores?: { name?: string }; shift_patterns?: { name?: string; start_time?: string; end_time?: string }; users?: { email?: string; name?: string } }) => {
       const userId = shift.user_id;
       const user = shift.users;
       
