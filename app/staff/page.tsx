@@ -5,7 +5,7 @@ import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import type { User, Store } from '@/lib/types';
+// import type { User, Store } from '@/lib/types'; // 未使用のため削除
 
 // APIから取得するデータ用の型
 interface ApiUser {

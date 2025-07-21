@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import AuthenticatedLayout from '@/components/layout/AuthenticatedLayout';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
@@ -91,7 +91,7 @@ export default function RequestOffPage() {
   }, [router]);
 
   // データ取得関数
-  const fetchTimeOffRequests = async () => {
+  const fetchTimeOffRequests = useCallback(async () => {
     if (!currentUser) return [];
     
     try {
@@ -118,7 +118,7 @@ export default function RequestOffPage() {
       console.error('Error fetching time off requests:', error);
       throw error;
     }
-  };
+  }, [currentUser]);
 
   // 初期データ読み込み
   useEffect(() => {
@@ -140,7 +140,7 @@ export default function RequestOffPage() {
     };
 
     loadInitialData();
-  }, [currentUser]);
+  }, [currentUser, fetchTimeOffRequests]);
 
   // 日付ユーティリティ関数
   const formatDate = (date: string) => {
@@ -560,7 +560,7 @@ export default function RequestOffPage() {
                     </h4>
                     <div className="max-h-32 overflow-y-auto">
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {selectedDates.map((date, index) => (
+                        {selectedDates.map((date) => (
                           <div
                             key={date}
                             className="flex items-center justify-between p-2 bg-white rounded-lg border border-blue-200"

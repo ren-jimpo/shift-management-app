@@ -67,7 +67,7 @@ export default function LoginPage() {
         throw new Error('ログインIDまたはパスワードが正しくありません');
       }
 
-      const authResult = await authResponse.json();
+      // const authResult = await authResponse.json(); // 未使用のため削除
 
       // 5. ログイン成功時、ユーザー情報をローカルストレージに保存
       const userInfo = {
@@ -76,7 +76,7 @@ export default function LoginPage() {
         email: user.email,
         role: user.role,
         loginId: loginId,
-        stores: user.user_stores?.map((us: any) => us.store_id) || []
+        stores: user.user_stores?.map((us: { store_id: string }) => us.store_id) || []
       };
 
       localStorage.setItem('currentUser', JSON.stringify(userInfo));

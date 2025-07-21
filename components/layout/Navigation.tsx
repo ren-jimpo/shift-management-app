@@ -64,11 +64,11 @@ const Navigation = () => {
             
             const shiftsResponse = await fetch(`/api/shifts?user_id=${currentUser.id}&date_from=${today}&date_to=${futureDateStr}`);
             const userShifts = shiftsResponse.ok ? (await shiftsResponse.json()).data || [] : [];
-            const userShiftDates = new Set(userShifts.map((shift: any) => shift.date));
+            const userShiftDates = new Set(userShifts.map((shift: { date: string }) => shift.date));
             
-            const availableRequests = emergencyResult.data?.filter((request: any) => {
+            const availableRequests = emergencyResult.data?.filter((request: { date: string; emergency_volunteers?: { user_id: string }[] }) => {
               // 既に応募済みでない
-              const alreadyApplied = request.emergency_volunteers?.some((volunteer: any) => 
+              const alreadyApplied = request.emergency_volunteers?.some((volunteer: { user_id: string }) => 
                 volunteer.user_id === currentUser.id
               );
               

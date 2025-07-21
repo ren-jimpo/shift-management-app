@@ -7,7 +7,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 
 import { supabase } from '@/lib/supabase';
-import { DatabaseUser } from '@/lib/types';
+import { DatabaseUser, DatabaseEmergencyRequest } from '@/lib/types';
 
 // ダッシュボード専用の型定義
 interface DashboardStats {
@@ -81,7 +81,7 @@ export default function DashboardPage() {
   });
   const [storeStaffing, setStoreStaffing] = useState<StoreStaffing[]>([]);
   const [recentRequests, setRecentRequests] = useState<DashboardTimeOffRequest[]>([]);
-  const [emergencyRequests, setEmergencyRequests] = useState<any[]>([]);
+  const [emergencyRequests, setEmergencyRequests] = useState<DatabaseEmergencyRequest[]>([]);
   const [users, setUsers] = useState<DatabaseUser[]>([]);
   const [shiftPatterns, setShiftPatterns] = useState<DashboardShiftPattern[]>([]);
   const [isLoading, setIsLoading] = useState(true);
