@@ -18,5 +18,14 @@ export const mockTimeOffRequests: TimeOffRequest[] = [];
 // モック代打募集（実際のデータベースを使用するため空に）
 export const mockEmergencyRequests: EmergencyRequest[] = [];
 
-// 現在のユーザー（実際のログイン機能を使用するため削除）
-// export const currentUser = mockUsers[0]; 
+// 現在のユーザー（Navigation用の一時的なモック）
+export const currentUser: User = {
+  id: '1',
+  name: '田中 太郎',
+  phone: '090-1234-5678',
+  email: 'tanaka@example.com',
+  role: 'manager',
+  stores: ['kyobashi', 'tenma'],
+  skillLevel: 'veteran',
+  memo: '店長経験5年、京橋店責任者'
+}; 

@@ -480,19 +480,20 @@ export default function ShiftCreatePage() {
   };
 
   // セルクリックでモーダル開く
-  const handleCellClick = (date: string, timeSlot: string, dayIndex: number) => {
+  const handleCellClick = async (date: string, timeSlot: string, dayIndex: number) => {
     if (!selectedStore) {
       setError('店舗を選択してください');
       return;
     }
 
-    // 確定済みシフトがある場合でもスタッフ追加は可能
-    // （削除制限は個別のシフトレベルで維持）
-    
     setModalData({ date, timeSlot, dayIndex });
     setSelectedUser('');
     setSelectedPattern('');
-    setStaffConflict(null); // スタッフ競合をクリア
+    setStaffShiftStatus(null); // スタッフシフト状況をクリア
+    
+    // 該当日の確定済みシフトをチェック
+    await checkAllStaffConfirmedShifts(date);
+    
     setIsModalOpen(true);
   };
 
@@ -530,9 +531,12 @@ export default function ShiftCreatePage() {
         if (response.status === 409 && errorData.conflictingStore) {
           const selectedUserName = users.find(u => u.id === selectedUser)?.name || '選択されたスタッフ';
           const conflictingStoreName = errorData.conflictingStore;
-          const currentStoreName = stores.find(s => s.id === selectedStore)?.name || '現在の店舗';
           
-          setError(`${selectedUserName}は既に${conflictingStoreName}で出勤予定です。同じ日に複数の店舗で勤務することはできません。`);
+          if (errorData.conflictType === 'confirmed') {
+            setError(`${selectedUserName}は既に${conflictingStoreName}で確定済みのシフトがあります。確定済みシフトがある日は他の店舗でのシフト作成はできません。`);
+          } else {
+            setError(`${selectedUserName}は既に${conflictingStoreName}で下書きシフトがあります。同じ日に複数の店舗で勤務することはできません。`);
+          }
         } else {
           setError(errorData.error || 'シフトの追加に失敗しました');
         }
@@ -820,7 +824,7 @@ export default function ShiftCreatePage() {
     return warnings;
   };
 
-  // 店舗所属スタッフのみフィルタ
+  // 店舗所属スタッフのみフィルタ（基本的なシフト作成は所属スタッフ内で完結）
   const availableStaff = selectedStore ? users.filter(user => user.stores.includes(selectedStore)) : [];
 
   // 時給計算（仮）
@@ -952,45 +956,69 @@ export default function ShiftCreatePage() {
 
   const shiftStatus = weekShiftStatus();
 
-  // 特定のスタッフが他の店舗で同じ日に勤務予定かチェック
-  const checkStaffConflictAtOtherStores = async (userId: string, date: string) => {
+  // 特定のスタッフの同日シフト状況をチェック（同店舗・他店舗両方）
+  const checkStaffShiftStatus = async (userId: string, date: string) => {
     try {
       const response = await fetch(`/api/shifts?user_id=${userId}&date_from=${date}&date_to=${date}`);
-      if (!response.ok) return null;
+      if (!response.ok) return { hasConflict: false, conflicts: [] };
       
       const result = await response.json();
       const existingShifts = result.data || [];
       
-      // 現在選択中の店舗以外でのシフトを確認
-      const conflictingShift = existingShifts.find((shift: any) => 
-        shift.store_id !== selectedStore && shift.date === date
-      );
-      
-      if (conflictingShift) {
-        return {
-          storeName: conflictingShift.stores?.name || '不明な店舗',
-          storeId: conflictingShift.store_id
-        };
-      }
-      
-      return null;
+             const conflicts = existingShifts.map((shift: any) => ({
+         storeName: shift.stores?.name || '不明な店舗',
+         storeId: shift.store_id,
+         status: shift.status,
+         isConfirmed: shift.status === 'confirmed',
+         isSameStore: shift.store_id === selectedStore,
+         shiftPattern: shift.shift_patterns?.name || '不明なパターン',
+         startTime: shift.shift_patterns?.start_time || '',
+         endTime: shift.shift_patterns?.end_time || ''
+       }));
+       
+       return {
+         hasConflict: conflicts.length > 0,
+         conflicts: conflicts,
+         hasOtherStoreConflict: conflicts.some((c: any) => !c.isSameStore),
+         hasSameStoreConflict: conflicts.some((c: any) => c.isSameStore),
+         hasConfirmedConflict: conflicts.some((c: any) => c.isConfirmed)
+       };
     } catch (error) {
-      console.error('Error checking staff conflict:', error);
-      return null;
+      console.error('Error checking staff shift status:', error);
+      return { hasConflict: false, conflicts: [] };
     }
   };
 
-  // スタッフ選択時の競合チェック
-  const [staffConflict, setStaffConflict] = useState<{storeName: string, storeId: string} | null>(null);
+  // スタッフ選択時の競合チェック（下書き・確定関係なく制限）
+  const [staffShiftStatus, setStaffShiftStatus] = useState<any>(null);
+  const [staffWithConfirmedShifts, setStaffWithConfirmedShifts] = useState<string[]>([]);
   
   // スタッフ選択が変更された時の処理
   const handleStaffSelection = async (userId: string) => {
     setSelectedUser(userId);
-    setStaffConflict(null);
+    setStaffShiftStatus(null);
     
     if (userId && modalData) {
-      const conflict = await checkStaffConflictAtOtherStores(userId, modalData.date);
-      setStaffConflict(conflict);
+      const shiftStatus = await checkStaffShiftStatus(userId, modalData.date);
+      setStaffShiftStatus(shiftStatus);
+    }
+  };
+
+  // モーダル開時に全スタッフの確定シフト状況をチェック
+  const checkAllStaffConfirmedShifts = async (date: string) => {
+    try {
+      const response = await fetch(`/api/shifts?date_from=${date}&date_to=${date}&status=confirmed`);
+      if (!response.ok) return;
+      
+      const result = await response.json();
+      const confirmedShifts = result.data || [];
+      
+      const staffWithConfirmed = confirmedShifts
+        .map((shift: any) => shift.user_id as string)
+        .filter((userId: string) => userId);
+      setStaffWithConfirmedShifts(Array.from(new Set(staffWithConfirmed)));
+    } catch (error) {
+      console.error('Error checking confirmed shifts:', error);
     }
   };
 
@@ -1029,11 +1057,65 @@ export default function ShiftCreatePage() {
       // 代打募集データを更新
       setEmergencyRequests([...emergencyRequests, result.data]);
       
+      // 店舗所属スタッフ + 応援可能スタッフにメール送信
+      try {
+        // 対象店舗の所属スタッフと応援可能スタッフを取得
+        const targetStoreData = stores.find(store => store.id === result.data.store_id);
+        if (!targetStoreData) {
+          console.error('Target store not found for email sending');
+          return;
+        }
+        
+        // 所属スタッフ
+        const storeStaff = users.filter(user => user.stores.includes(result.data.store_id));
+        
+        // 応援可能スタッフ（所属していないが応援可能）
+        const flexibleStaff = users.filter(user => 
+          !user.stores.includes(result.data.store_id) && // 所属していない
+          targetStoreData.flexibleStaff.includes(user.id) // 応援可能リストに含まれる
+        );
+        
+        // 所属スタッフと応援可能スタッフを結合
+        const allTargetStaff = [...storeStaff, ...flexibleStaff];
+        const staffEmails = allTargetStaff
+          .map(staff => staff.email)
+          .filter(email => email); // emailが存在するもののみ
+
+        console.log(`Sending emergency request email to: ${allTargetStaff.length} staff members (${storeStaff.length} store staff + ${flexibleStaff.length} flexible staff)`);
+
+        if (staffEmails.length > 0) {
+            const emailResponse = await fetch('/api/email', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                type: 'emergency-request',
+                userEmails: staffEmails,
+                details: {
+                  storeName: result.data.stores?.name || '不明な店舗',
+                  date: new Date(result.data.date).toLocaleDateString('ja-JP'),
+                  shiftPattern: result.data.shift_patterns?.name || '不明なシフト',
+                  startTime: result.data.shift_patterns?.start_time || '00:00',
+                  endTime: result.data.shift_patterns?.end_time || '00:00',
+                  reason: result.data.reason
+                }
+              }),
+            });
+
+            if (!emailResponse.ok) {
+              console.error('メール送信に失敗しましたが、代打募集は正常に作成されました');
+            }
+          }
+      } catch (emailError) {
+        console.error('メール送信エラー:', emailError);
+      }
+      
       // モーダルを閉じる
       setEmergencyModal({ show: false, shift: null });
       setEmergencyReason('');
       
-      alert('代打募集を開始しました');
+      alert('代打募集を開始し、対象スタッフにメール通知を送信しました！');
       
     } catch (error) {
       setError(error instanceof Error ? error.message : '代打募集の作成に失敗しました');
@@ -1448,7 +1530,9 @@ export default function ShiftCreatePage() {
                                                 <span className="ml-1 text-yellow-300">✓</span>
                                               )}
                                               {isEmergencyRequested && (
-                                                <span className="ml-1 text-red-300">🆘</span>
+                                                <span className="ml-1 text-red-300">
+                                                  🆘{emergencyRequest?.emergency_volunteers?.length || 0}
+                                                </span>
                                               )}
                                             </span>
                                             {!isConfirmed && !isEmergencyRequested && (
@@ -1470,9 +1554,6 @@ export default function ShiftCreatePage() {
                                               {pattern.startTime || '00:00'}-{pattern.endTime || '00:00'}
                                             </span>
                                             <div className="flex items-center space-x-1">
-                                              {isConfirmed && (
-                                                <span className="text-green-600 font-medium">確定</span>
-                                              )}
                                               {isEmergencyRequested && (
                                                 <span className="text-red-600 font-medium text-xs">代打募集中</span>
                                               )}
@@ -1584,44 +1665,38 @@ export default function ShiftCreatePage() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     スタッフ選択 *
                   </label>
+                  {staffWithConfirmedShifts.length > 0 && (
+                    <div className="mb-2 p-2 bg-blue-50 border border-blue-200 rounded-lg">
+                      <p className="text-xs text-blue-700">
+                        ℹ️ この日に確定済みシフトがあるスタッフは選択肢から除外されています
+                      </p>
+                    </div>
+                  )}
                   <select
                     value={selectedUser}
                     onChange={(e) => handleStaffSelection(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   >
                     <option value="">スタッフを選択してください</option>
-                    {availableStaff.map(user => {
-                      const isOnTimeOff = isStaffOnTimeOff(user.id, modalData.date);
-                      return (
-                        <option 
-                          key={user.id} 
-                          value={user.id} 
-                          disabled={isOnTimeOff}
-                          style={isOnTimeOff ? { color: '#9CA3AF', backgroundColor: '#F3F4F6' } : {}}
-                        >
-                          {user.name} ({user.skillLevel === 'veteran' ? 'ベテラン' : user.skillLevel === 'regular' ? '一般' : '研修中'})
-                          {isOnTimeOff && ' [希望休承認済み]'}
-                        </option>
-                      );
-                    })}
+                    {availableStaff
+                      .filter(user => !staffWithConfirmedShifts.includes(user.id)) // 確定済みシフトがあるスタッフを除外
+                      .map(user => {
+                        const isOnTimeOff = isStaffOnTimeOff(user.id, modalData.date);
+                        
+                        return (
+                          <option 
+                            key={user.id} 
+                            value={user.id} 
+                            disabled={isOnTimeOff}
+                            style={isOnTimeOff ? { color: '#9CA3AF', backgroundColor: '#F3F4F6' } : {}}
+                          >
+                            {user.name} ({user.skillLevel === 'veteran' ? 'ベテラン' : user.skillLevel === 'regular' ? '一般' : '研修中'})
+                            {isOnTimeOff && ' [希望休承認済み]'}
+                          </option>
+                        );
+                      })}
                   </select>
-                  
-                  {/* 他店舗での勤務予定警告 */}
-                  {staffConflict && (
-                    <div className="mt-2 p-3 bg-orange-50 border border-orange-200 rounded-lg">
-                      <div className="flex items-center">
-                        <svg className="w-5 h-5 text-orange-600 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.268 15.5c-.77.833.192 2.5 1.732 2.5z" />
-                        </svg>
-                        <p className="text-sm text-orange-700">
-                          <strong>{users.find(u => u.id === selectedUser)?.name}</strong>は既に<strong>{staffConflict.storeName}</strong>で出勤予定です
-                        </p>
-                      </div>
-                      <p className="text-xs text-orange-600 mt-1">
-                        同じ日に複数の店舗で勤務することはできません
-                      </p>
-                    </div>
-                  )}
+
                   
                   {/* 希望休承認済みスタッフの警告表示 */}
                   {availableStaff.some(user => isStaffOnTimeOff(user.id, modalData.date)) && (
@@ -1712,7 +1787,7 @@ export default function ShiftCreatePage() {
                   </Button>
                   <Button
                     onClick={handleAddShift}
-                    disabled={!selectedUser || !selectedPattern || saving || staffConflict !== null}
+                    disabled={!selectedUser || !selectedPattern || saving}
                   >
                     {saving ? (
                       <>

@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
 
     // login_idが指定されている場合は、そのユーザーのみを取得
     if (loginId) {
-      let query = supabase
+      const query = supabase
         .from('users')
         .select(`
           *,
@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
       .from('users')
       .select(`
         *,
-        user_stores!inner(
+        user_stores(
           store_id,
           is_flexible,
           stores(id, name)
@@ -291,7 +291,15 @@ export async function PUT(request: NextRequest) {
     }
 
     // ユーザー情報更新
-    const updateData: any = {
+    const updateData: {
+      updated_at: string;
+      name?: string;
+      phone?: string;
+      email?: string;
+      role?: string;
+      skill_level?: string;
+      memo?: string;
+    } = {
       updated_at: new Date().toISOString()
     };
 

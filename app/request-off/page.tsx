@@ -51,6 +51,8 @@ interface DisplayTimeOffRequest {
   respondedByName?: string;
 }
 
+type SelectionMode = 'single' | 'range' | 'multiple';
+
 export default function RequestOffPage() {
   // 認証関連のstate
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -59,8 +61,11 @@ export default function RequestOffPage() {
   // データベースから取得するstate
   const [requests, setRequests] = useState<DisplayTimeOffRequest[]>([]);
   
-  // UI state
-  const [selectedDate, setSelectedDate] = useState('');
+  // UI state - 複数日選択対応
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>('single');
+  const [selectedDates, setSelectedDates] = useState<string[]>([]);
+  const [rangeStart, setRangeStart] = useState('');
+  const [rangeEnd, setRangeEnd] = useState('');
   const [reason, setReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -137,6 +142,74 @@ export default function RequestOffPage() {
     loadInitialData();
   }, [currentUser]);
 
+  // 日付ユーティリティ関数
+  const formatDate = (date: string) => {
+    return new Date(date).toLocaleDateString('ja-JP', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      weekday: 'short'
+    });
+  };
+
+  const generateDateRange = (start: string, end: string): string[] => {
+    const dates = [];
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    
+    for (let date = new Date(startDate); date <= endDate; date.setDate(date.getDate() + 1)) {
+      dates.push(date.toISOString().split('T')[0]);
+    }
+    
+    return dates;
+  };
+
+  // 選択モード変更時の処理
+  const handleModeChange = (mode: SelectionMode) => {
+    setSelectionMode(mode);
+    setSelectedDates([]);
+    setRangeStart('');
+    setRangeEnd('');
+  };
+
+  // 個別日付選択の処理
+  const handleDateToggle = (date: string) => {
+    if (selectedDates.includes(date)) {
+      setSelectedDates(selectedDates.filter(d => d !== date));
+    } else {
+      setSelectedDates([...selectedDates, date].sort());
+    }
+  };
+
+  // 範囲選択の処理
+  const handleRangeChange = (start: string, end: string) => {
+    setRangeStart(start);
+    setRangeEnd(end);
+    
+    if (start && end && start <= end) {
+      const rangeDates = generateDateRange(start, end);
+      setSelectedDates(rangeDates);
+    } else if (start && !end) {
+      setSelectedDates([start]);
+    } else {
+      setSelectedDates([]);
+    }
+  };
+
+  // 最終的な選択日程を取得
+  const getFinalSelectedDates = (): string[] => {
+    switch (selectionMode) {
+      case 'single':
+        return selectedDates.slice(0, 1);
+      case 'range':
+        return rangeStart && rangeEnd ? generateDateRange(rangeStart, rangeEnd) : [];
+      case 'multiple':
+        return selectedDates;
+      default:
+        return [];
+    }
+  };
+
   // 申請送信
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -151,22 +224,41 @@ export default function RequestOffPage() {
       return;
     }
 
+    const finalDates = getFinalSelectedDates();
+
     // フロントエンド側バリデーション
     const trimmedReason = reason.trim();
     
     // 日付チェック
-    if (!selectedDate) {
+    if (finalDates.length === 0) {
       setError('希望休日を選択してください');
       setIsSubmitting(false);
       return;
     }
 
-    const requestDate = new Date(selectedDate);
+    // 最大日数制限（例：30日）
+    if (finalDates.length > 30) {
+      setError('一度に申請できる日数は30日までです');
+      setIsSubmitting(false);
+      return;
+    }
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    if (requestDate < today) {
+    // 過去日チェック
+    const hasPastDate = finalDates.some(date => new Date(date) < today);
+    if (hasPastDate) {
       setError('過去の日付は選択できません');
+      setIsSubmitting(false);
+      return;
+    }
+
+    // 既存申請との重複チェック
+    const existingDates = new Set(requests.map(r => r.date));
+    const duplicateDates = finalDates.filter(date => existingDates.has(date));
+    if (duplicateDates.length > 0) {
+      setError(`以下の日付は既に申請済みです: ${duplicateDates.map(formatDate).join(', ')}`);
       setIsSubmitting(false);
       return;
     }
@@ -185,29 +277,36 @@ export default function RequestOffPage() {
     }
 
     try {
-      const requestData = {
-        user_id: currentUser?.id,
-        date: selectedDate,
-        reason: trimmedReason
-      };
+      // 複数日申請を並列処理
+      const requestPromises = finalDates.map(date => {
+        const requestData = {
+          user_id: currentUser?.id,
+          date: date,
+          reason: trimmedReason
+        };
 
-      const response = await fetch('/api/time-off-requests', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestData),
+        return fetch('/api/time-off-requests', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestData),
+        });
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || '希望休申請の送信に失敗しました');
-      }
-
-      const result = await response.json();
+      const responses = await Promise.all(requestPromises);
       
+      // 全ての応答をチェック
+      const results = await Promise.all(responses.map(async (response, index) => {
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(`${formatDate(finalDates[index])}: ${errorData.error || '申請に失敗しました'}`);
+        }
+        return response.json();
+      }));
+
       // 新しい申請をローカル状態に追加
-      const newRequest: DisplayTimeOffRequest = {
+      const newRequests: DisplayTimeOffRequest[] = results.map(result => ({
         id: result.data.id,
         userId: result.data.user_id,
         date: result.data.date,
@@ -217,14 +316,22 @@ export default function RequestOffPage() {
         respondedBy: result.data.responded_by,
         createdAt: result.data.created_at,
         respondedByName: undefined
-      };
+      }));
 
-      setRequests([newRequest, ...requests]);
-      setSelectedDate('');
+      setRequests([...newRequests, ...requests]);
+      
+      // フォームリセット
+      setSelectedDates([]);
+      setRangeStart('');
+      setRangeEnd('');
       setReason('');
       
-      // 成功メッセージ（実際にはtoastライブラリなどを使用）
-      alert('希望休申請を送信しました。店長の承認をお待ちください。');
+      // 成功メッセージ
+      const message = finalDates.length === 1 
+        ? '希望休申請を送信しました。店長の承認をお待ちください。'
+        : `${finalDates.length}日分の希望休申請を送信しました。店長の承認をお待ちください。`;
+      alert(message);
+      
     } catch (error) {
       setError(error instanceof Error ? error.message : '希望休申請の送信に失敗しました');
     } finally {
@@ -328,20 +435,162 @@ export default function RequestOffPage() {
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-6">
+                {/* 選択モード切り替え */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-3">
+                    選択方法 *
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleModeChange('single')}
+                      className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                        selectionMode === 'single'
+                          ? 'bg-blue-100 border-blue-300 text-blue-700'
+                          : 'bg-gray-50 border-gray-300 text-gray-700 hover:bg-gray-100'
+                      }`}
+                      disabled={isSubmitting}
+                    >
+                      単日選択
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleModeChange('range')}
+                      className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                        selectionMode === 'range'
+                          ? 'bg-blue-100 border-blue-300 text-blue-700'
+                          : 'bg-gray-50 border-gray-300 text-gray-700 hover:bg-gray-100'
+                      }`}
+                      disabled={isSubmitting}
+                    >
+                      連続期間
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleModeChange('multiple')}
+                      className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                        selectionMode === 'multiple'
+                          ? 'bg-blue-100 border-blue-300 text-blue-700'
+                          : 'bg-gray-50 border-gray-300 text-gray-700 hover:bg-gray-100'
+                      }`}
+                      disabled={isSubmitting}
+                    >
+                      複数選択
+                    </button>
+                  </div>
+                </div>
+
+                {/* 日付選択UI */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     希望休日 *
                   </label>
-                  <Input
-                    type="date"
-                    value={selectedDate}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                    min={new Date().toISOString().split('T')[0]}
-                    required
-                    disabled={isSubmitting}
-                  />
-                  <p className="text-xs text-gray-500 mt-1">今日以降の日付を選択してください</p>
+                  
+                  {selectionMode === 'single' && (
+                    <div>
+                      <Input
+                        type="date"
+                        value={selectedDates[0] || ''}
+                        onChange={(e) => setSelectedDates(e.target.value ? [e.target.value] : [])}
+                        min={new Date().toISOString().split('T')[0]}
+                        disabled={isSubmitting}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">1日のみ選択してください</p>
+                    </div>
+                  )}
+
+                  {selectionMode === 'range' && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">開始日</label>
+                          <Input
+                            type="date"
+                            value={rangeStart}
+                            onChange={(e) => handleRangeChange(e.target.value, rangeEnd)}
+                            min={new Date().toISOString().split('T')[0]}
+                            disabled={isSubmitting}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">終了日</label>
+                          <Input
+                            type="date"
+                            value={rangeEnd}
+                            onChange={(e) => handleRangeChange(rangeStart, e.target.value)}
+                            min={rangeStart || new Date().toISOString().split('T')[0]}
+                            disabled={isSubmitting}
+                          />
+                        </div>
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        連続した期間を選択してください（旅行・長期休暇など）
+                      </p>
+                    </div>
+                  )}
+
+                  {selectionMode === 'multiple' && (
+                    <div className="space-y-3">
+                      <div className="flex items-center space-x-2">
+                        <Input
+                          type="date"
+                          min={new Date().toISOString().split('T')[0]}
+                          disabled={isSubmitting}
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleDateToggle(e.target.value);
+                              e.target.value = '';
+                            }
+                          }}
+                        />
+                        <span className="text-sm text-gray-500">日付を選択して追加</span>
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        複数の日付を個別に選択できます（最大30日）
+                      </p>
+                    </div>
+                  )}
                 </div>
+
+                {/* 選択された日程の表示 */}
+                {selectedDates.length > 0 && (
+                  <div className="p-4 bg-blue-50 rounded-xl">
+                    <h4 className="font-medium text-blue-900 mb-2">
+                      選択された日程（{selectedDates.length}日）
+                    </h4>
+                    <div className="max-h-32 overflow-y-auto">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {selectedDates.map((date, index) => (
+                          <div
+                            key={date}
+                            className="flex items-center justify-between p-2 bg-white rounded-lg border border-blue-200"
+                          >
+                            <span className="text-sm text-blue-800">
+                              {formatDate(date)}
+                            </span>
+                            {selectionMode === 'multiple' && (
+                              <button
+                                type="button"
+                                onClick={() => handleDateToggle(date)}
+                                className="text-red-500 hover:text-red-700 ml-2"
+                                disabled={isSubmitting}
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {selectionMode === 'range' && selectedDates.length > 1 && (
+                      <p className="text-xs text-blue-700 mt-2">
+                        📅 {formatDate(selectedDates[0])} から {formatDate(selectedDates[selectedDates.length - 1])} まで
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -362,20 +611,24 @@ export default function RequestOffPage() {
                   <h4 className="font-medium text-blue-900 mb-2">申請前の注意事項</h4>
                   <ul className="text-sm text-blue-800 space-y-1">
                     <li>• 希望休は最低1週間前までに申請してください</li>
+                    <li>• 連続期間の申請は旅行など正当な理由が必要です</li>
+                    <li>• 一度に申請できる日数は最大30日までです</li>
                     <li>• 繁忙期や重要なイベント時は承認されない場合があります</li>
                     <li>• 承認結果は申請後24時間以内にお知らせします</li>
                     <li>• 緊急の場合は直接店長に連絡してください</li>
                   </ul>
                 </div>
 
-                <Button type="submit" fullWidth disabled={isSubmitting || !selectedDate || !reason.trim()}>
+                <Button type="submit" fullWidth disabled={isSubmitting || !selectedDates.length || !reason.trim()}>
                   {isSubmitting ? (
                     <>
                       <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
                       送信中...
                     </>
                   ) : (
-                    '申請を送信'
+                    selectedDates.length === 1 
+                      ? '申請を送信' 
+                      : `${selectedDates.length}日分の申請を送信`
                   )}
                 </Button>
               </form>
@@ -390,62 +643,127 @@ export default function RequestOffPage() {
             <CardContent>
               <div className="space-y-4">
                 {requests.length > 0 ? (
-                  requests
-                    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-                    .map((request) => (
-                      <div key={request.id} className="border border-gray-200 rounded-xl p-4">
-                        <div className="flex items-start justify-between mb-3">
-                          <div>
-                            <p className="font-semibold text-gray-900">
-                              {new Date(request.date).toLocaleDateString('ja-JP', {
-                                year: 'numeric',
-                                month: 'long',
-                                day: 'numeric',
-                                weekday: 'short'
-                              })}
-                            </p>
-                            <p className="text-sm text-gray-500">
-                              申請日: {new Date(request.createdAt).toLocaleDateString('ja-JP')}
-                            </p>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(request.status)}`}>
-                              {getStatusText(request.status)}
-                            </span>
-                            {request.status === 'pending' && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleDeleteRequest(request.id)}
-                                className="text-red-600 hover:text-red-800"
-                              >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                </svg>
-                              </Button>
+                  (() => {
+                    // 同じ理由・同じ申請時刻でグループ化
+                    const groupedRequests = requests.reduce((groups, request) => {
+                      const key = `${request.reason}-${new Date(request.createdAt).toISOString().split('T')[0]}`;
+                      if (!groups[key]) {
+                        groups[key] = [];
+                      }
+                      groups[key].push(request);
+                      return groups;
+                    }, {} as Record<string, DisplayTimeOffRequest[]>);
+
+                    return Object.values(groupedRequests)
+                      .sort((a, b) => new Date(b[0].createdAt).getTime() - new Date(a[0].createdAt).getTime())
+                      .map((group) => {
+                        const isMultipleDay = group.length > 1;
+                        const sortedGroup = group.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+                        const firstRequest = sortedGroup[0];
+                        const allSameStatus = group.every(r => r.status === firstRequest.status);
+
+                        return (
+                          <div key={`group-${firstRequest.id}`} className="border border-gray-200 rounded-xl p-4">
+                            <div className="flex items-start justify-between mb-3">
+                              <div>
+                                {isMultipleDay ? (
+                                  <div>
+                                    <p className="font-semibold text-gray-900">
+                                      {group.length}日間の希望休
+                                    </p>
+                                    <p className="text-sm text-gray-600">
+                                      {formatDate(sortedGroup[0].date)} 〜 {formatDate(sortedGroup[sortedGroup.length - 1].date)}
+                                    </p>
+                                    <p className="text-sm text-gray-500">
+                                      申請日: {new Date(firstRequest.createdAt).toLocaleDateString('ja-JP')}
+                                    </p>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <p className="font-semibold text-gray-900">
+                                      {formatDate(firstRequest.date)}
+                                    </p>
+                                    <p className="text-sm text-gray-500">
+                                      申請日: {new Date(firstRequest.createdAt).toLocaleDateString('ja-JP')}
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                {allSameStatus ? (
+                                  <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(firstRequest.status)}`}>
+                                    {getStatusText(firstRequest.status)}
+                                  </span>
+                                ) : (
+                                  <div className="flex flex-col space-y-1">
+                                    <span className="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
+                                      混在
+                                    </span>
+                                  </div>
+                                )}
+                                {firstRequest.status === 'pending' && allSameStatus && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => {
+                                      if (confirm(`${group.length}日分の申請を削除してもよろしいですか？`)) {
+                                        group.forEach(request => handleDeleteRequest(request.id));
+                                      }
+                                    }}
+                                    className="text-red-600 hover:text-red-800"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                    </svg>
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                            
+                            <div className="mb-3">
+                              <p className="text-sm font-medium text-gray-700">理由</p>
+                              <p className="text-gray-900">{firstRequest.reason}</p>
+                            </div>
+
+                            {/* 複数日の場合は個別日程も表示 */}
+                            {isMultipleDay && (
+                              <div className="mb-3 p-3 bg-gray-50 rounded-lg">
+                                <p className="text-sm font-medium text-gray-700 mb-2">申請日程</p>
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                  {sortedGroup.map((request) => (
+                                    <div key={request.id} className="flex items-center space-x-2">
+                                      <span className="text-sm text-gray-600">
+                                        {new Date(request.date).toLocaleDateString('ja-JP', {
+                                          month: 'numeric',
+                                          day: 'numeric',
+                                          weekday: 'short'
+                                        })}
+                                      </span>
+                                      <span className={`px-1 py-0.5 text-xs font-medium rounded ${getStatusColor(request.status)}`}>
+                                        {getStatusText(request.status)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {firstRequest.status !== 'pending' && firstRequest.respondedAt && allSameStatus && (
+                              <div className="p-3 bg-gray-50 rounded-lg">
+                                <p className="text-sm text-gray-600">
+                                  {new Date(firstRequest.respondedAt).toLocaleDateString('ja-JP', {
+                                    month: 'short',
+                                    day: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit'
+                                  })}に{firstRequest.respondedByName || '管理者'}が{getStatusText(firstRequest.status)}
+                                </p>
+                              </div>
                             )}
                           </div>
-                        </div>
-                        
-                        <div className="mb-3">
-                          <p className="text-sm font-medium text-gray-700">理由</p>
-                          <p className="text-gray-900">{request.reason}</p>
-                        </div>
-
-                        {request.status !== 'pending' && request.respondedAt && (
-                          <div className="p-3 bg-gray-50 rounded-lg">
-                            <p className="text-sm text-gray-600">
-                              {new Date(request.respondedAt).toLocaleDateString('ja-JP', {
-                                month: 'short',
-                                day: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}に{request.respondedByName || '管理者'}が{getStatusText(request.status)}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-                    ))
+                        );
+                      });
+                  })()
                 ) : (
                   <div className="text-center py-8 text-gray-500">
                     <svg className="w-12 h-12 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">

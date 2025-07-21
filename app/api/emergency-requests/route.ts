@@ -212,6 +212,33 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'Volunteer not found' }, { status: 404 });
     }
 
+    // 承認前に応募者が同じ日に他のシフトを持っていないかチェック
+    const { data: existingShifts } = await supabase
+      .from('shifts')
+      .select(`
+        id,
+        store_id,
+        status,
+        stores(id, name)
+      `)
+      .eq('user_id', volunteer.user_id)
+      .eq('date', emergencyRequest.date);
+
+    if (existingShifts && existingShifts.length > 0) {
+      const existingShift = existingShifts[0];
+      const storeData = existingShift.stores as { name?: string } | null;
+      
+      return NextResponse.json(
+        { 
+          error: `Cannot approve volunteer: ${volunteer.users?.name || 'User'} already has a ${existingShift.status} shift at ${storeData?.name || '不明な店舗'} on this date`,
+          conflictingStore: storeData?.name || '不明な店舗',
+          conflictingStoreId: existingShift.store_id,
+          conflictType: existingShift.status
+        },
+        { status: 409 }
+      );
+    }
+
     // 2. 該当するシフトを検索・更新
     const { data: existingShift, error: shiftFindError } = await supabase
       .from('shifts')

@@ -206,4 +206,60 @@ export async function DELETE(request: NextRequest) {
     console.error('Unexpected error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
+}
+
+// PATCH - 希望休申請一括承認・却下
+export async function PATCH(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { request_ids, status, responded_by } = body;
+
+    if (!request_ids || !Array.isArray(request_ids) || request_ids.length === 0) {
+      return NextResponse.json({ error: 'Request IDs array is required' }, { status: 400 });
+    }
+
+    if (!status || !responded_by) {
+      return NextResponse.json({ error: 'Status and responded_by are required' }, { status: 400 });
+    }
+
+    if (!['approved', 'rejected'].includes(status)) {
+      return NextResponse.json({ error: 'Status must be either "approved" or "rejected"' }, { status: 400 });
+    }
+
+    // 最大処理件数制限（一度に100件まで）
+    if (request_ids.length > 100) {
+      return NextResponse.json({ error: 'Maximum 100 requests can be processed at once' }, { status: 400 });
+    }
+
+    // 一括更新実行
+    const { data, error } = await supabase
+      .from('time_off_requests')
+      .update({
+        status,
+        responded_by,
+        responded_at: new Date().toISOString()
+      })
+      .in('id', request_ids)
+      .eq('status', 'pending') // 保留中のもののみ更新
+      .select(`
+        *,
+        users!time_off_requests_user_id_fkey(id, name, role),
+        responded_by_user:users!time_off_requests_responded_by_fkey(id, name)
+      `);
+
+    if (error) {
+      console.error('Error bulk updating time off requests:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ 
+      data,
+      message: `Successfully ${status === 'approved' ? 'approved' : 'rejected'} ${data.length} requests`,
+      updated_count: data.length
+    }, { status: 200 });
+
+  } catch (error) {
+    console.error('Unexpected error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
 } 

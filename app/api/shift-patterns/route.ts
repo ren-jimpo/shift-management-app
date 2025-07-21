@@ -2,22 +2,28 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 
 // GET - シフトパターン一覧取得
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
     const { data, error } = await supabase
       .from('shift_patterns')
       .select('*')
-      .order('name');
+      .order('start_time');
 
     if (error) {
-      console.error('Error fetching shift patterns:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error('Shift patterns fetch error:', error);
+      return NextResponse.json(
+        { error: 'Failed to fetch shift patterns' },
+        { status: 500 }
+      );
     }
 
-    return NextResponse.json({ data }, { status: 200 });
+    return NextResponse.json({ data });
   } catch (error) {
-    console.error('Unexpected error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.error('Shift patterns API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
 

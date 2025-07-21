@@ -100,47 +100,44 @@ export default function StaffDashboardPage() {
         setError(null);
 
         const today = new Date().toISOString().split('T')[0];
-        const weekStart = new Date();
-        weekStart.setDate(weekStart.getDate() - weekStart.getDay() + 1); // 月曜日
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekStart.getDate() + 6); // 日曜日
 
-        // 並行してデータを取得
-        const [shiftsResult, requestsResult, emergencyResult] = await Promise.all([
-          fetch(`/api/shifts?user_id=${currentUser.id}&date_from=${today}&date_to=${weekEnd.toISOString().split('T')[0]}&status=confirmed`),
-          fetch(`/api/time-off-requests?user_id=${currentUser.id}`),
-          fetch('/api/emergency-requests?status=open')
-        ]);
-
-        // シフトデータの処理
-        if (shiftsResult.ok) {
-          const shiftsData = await shiftsResult.json();
-          const shifts = shiftsData.data || [];
-          
-          // 今日のシフトを取得（確定済みシフトのみ）
-          const todayShiftData = shifts.find((shift: Shift) => shift.date === today && shift.status === 'confirmed');
-          setTodayShift(todayShiftData || null);
-          
-          // 今週のシフトを取得（確定済みシフトのみ）
-          const confirmedShifts = shifts.filter((shift: Shift) => shift.status === 'confirmed');
-          setWeeklyShifts(confirmedShifts);
+        // 今日のシフトを取得
+        const todayShiftResponse = await fetch(`/api/shifts?user_id=${currentUser.id}&date_from=${today}&date_to=${today}`);
+        if (todayShiftResponse.ok) {
+          const todayResult = await todayShiftResponse.json();
+          setTodayShift(todayResult.data?.[0] || null);
         }
 
-        // 希望休申請データの処理
-        if (requestsResult.ok) {
-          const requestsData = await requestsResult.json();
-          setMyRequests(requestsData.data || []);
+        // 今週のシフトを取得
+        const startOfWeek = new Date();
+        startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+        const endOfWeek = new Date(startOfWeek);
+        endOfWeek.setDate(startOfWeek.getDate() + 6);
+
+        const weeklyShiftResponse = await fetch(
+          `/api/shifts?user_id=${currentUser.id}&date_from=${startOfWeek.toISOString().split('T')[0]}&date_to=${endOfWeek.toISOString().split('T')[0]}`
+        );
+        if (weeklyShiftResponse.ok) {
+          const weeklyResult = await weeklyShiftResponse.json();
+          setWeeklyShifts(weeklyResult.data || []);
         }
 
-        // 代打募集データの処理
-        if (emergencyResult.ok) {
-          const emergencyData = await emergencyResult.json();
-          setEmergencyRequests(emergencyData.data || []);
+        // 希望休申請履歴を取得
+        const requestsResponse = await fetch(`/api/time-off-requests?user_id=${currentUser.id}`);
+        if (requestsResponse.ok) {
+          const requestsResult = await requestsResponse.json();
+          setMyRequests(requestsResult.data || []);
+        }
+
+        // 代打募集を取得
+        const emergencyResponse = await fetch('/api/emergency-requests?status=open');
+        if (emergencyResponse.ok) {
+          const emergencyResult = await emergencyResponse.json();
+          setEmergencyRequests(emergencyResult.data || []);
         }
 
       } catch (error) {
-        console.error('データ取得エラー:', error);
-        setError('データの読み込みに失敗しました');
+        setError(error instanceof Error ? error.message : 'データの取得に失敗しました');
       } finally {
         setLoading(false);
       }
@@ -149,50 +146,44 @@ export default function StaffDashboardPage() {
     fetchDashboardData();
   }, [currentUser]);
 
-  // 今日の日付を取得
-  const today = new Date();
-  const todayString = today.toLocaleDateString('ja-JP', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    weekday: 'long'
-  });
-
-  // 今週の勤務時間を計算
+  // 週間勤務時間を計算
   const calculateWeeklyHours = () => {
-    let totalHours = 0;
-    weeklyShifts.forEach(shift => {
-      if (shift.shift_patterns?.start_time && shift.shift_patterns?.end_time) {
-        const start = new Date(`2000-01-01T${shift.shift_patterns.start_time}`);
-        const end = new Date(`2000-01-01T${shift.shift_patterns.end_time}`);
-        const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-        totalHours += Math.max(0, hours - 0.5); // 30分休憩を差し引く
-      }
-    });
-    return totalHours;
+    return weeklyShifts.reduce((total, shift) => {
+      if (!shift.shift_patterns) return total;
+      const start = new Date(`2000-01-01T${shift.shift_patterns.start_time}`);
+      const end = new Date(`2000-01-01T${shift.shift_patterns.end_time}`);
+      const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+      return total + hours;
+    }, 0);
   };
 
-  // 代打応募処理
-  const handleApplyEmergency = async (requestId: string) => {
-    if (!currentUser) {
-      setError('ユーザー認証が必要です');
-      return;
-    }
-
-    if (!confirm('この代打募集に応募しますか？')) return;
-
-    setApplyingTo(requestId);
-    setError(null);
+  // 代打募集への応募
+  const handleApplyEmergency = async (emergencyRequestId: string) => {
+    if (!currentUser) return;
 
     try {
+      setApplyingTo(emergencyRequestId);
+      setError(null);
+
+      // 事前チェック: 同じ日にシフトがあるかどうか確認
+      const emergencyRequest = emergencyRequests.find(req => req.id === emergencyRequestId);
+      if (emergencyRequest) {
+        // その日にシフトがあるかチェック
+        const existingShift = weeklyShifts.find(shift => shift.date === emergencyRequest.date);
+        if (existingShift) {
+          setError(`${emergencyRequest.date}は既に${existingShift.stores?.name || '他店舗'}でシフトが入っています`);
+          return;
+        }
+      }
+
       const response = await fetch('/api/emergency-volunteers', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          emergency_request_id: requestId,
-          user_id: currentUser.id
+          emergency_request_id: emergencyRequestId,
+          user_id: currentUser.id,
         }),
       });
 
@@ -219,6 +210,11 @@ export default function StaffDashboardPage() {
     return request.emergency_volunteers?.some(volunteer => 
       volunteer.user_id === currentUser?.id
     );
+  };
+
+  // 同じ日にシフトがあるかチェック
+  const hasShiftOnDate = (date: string) => {
+    return weeklyShifts.some(shift => shift.date === date);
   };
 
   // 緊急度を判定
@@ -291,7 +287,7 @@ export default function StaffDashboardPage() {
 
   return (
     <AuthenticatedLayout>
-      <div className="space-y-6">
+      <div className="space-y-4 sm:space-y-6">
         {/* エラー表示 */}
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-4">
@@ -302,7 +298,7 @@ export default function StaffDashboardPage() {
               <p className="text-red-700">{error}</p>
               <button 
                 onClick={() => setError(null)}
-                className="ml-auto text-red-400 hover:text-red-600"
+                className="ml-auto text-red-400 hover:text-red-600 p-1"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -312,16 +308,16 @@ export default function StaffDashboardPage() {
           </div>
         )}
 
-        {/* ページヘッダー */}
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">スタッフダッシュボード</h1>
-          <p className="text-gray-600 mt-2">こんにちは、{currentUser?.name}さん</p>
+        {/* ページヘッダー - モバイル最適化 */}
+        <div className="px-1">
+          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">スタッフダッシュボード</h1>
+          <p className="text-gray-600 mt-1 text-sm sm:text-base">こんにちは、{currentUser?.name}さん</p>
         </div>
 
-        {/* 今日のシフト */}
+        {/* 今日のシフト - モバイル最適化 */}
         <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center text-lg sm:text-xl">
               <svg className="w-5 h-5 mr-2 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
@@ -330,26 +326,26 @@ export default function StaffDashboardPage() {
           </CardHeader>
           <CardContent>
             {todayShift ? (
-              <div className="flex items-center justify-between p-4 bg-blue-50 rounded-lg">
-                <div>
-                  <div className="flex items-center space-x-3">
+              <div className="flex items-center justify-between p-3 sm:p-4 bg-blue-50 rounded-lg">
+                <div className="flex-1">
+                  <div className="flex items-center space-x-3 mb-2">
                     <div
-                      className="w-4 h-4 rounded-full"
+                      className="w-4 h-4 rounded-full flex-shrink-0"
                       style={{ backgroundColor: todayShift.shift_patterns?.color || '#6B7280' }}
                     ></div>
-                    <span className="font-medium text-gray-900">
+                    <span className="font-medium text-gray-900 text-sm sm:text-base">
                       {todayShift.shift_patterns?.name || 'シフト'}
                     </span>
                   </div>
-                  <div className="text-sm text-gray-600 mt-1">
+                  <div className="text-sm sm:text-base text-gray-600 mb-1">
                     {todayShift.shift_patterns?.start_time} - {todayShift.shift_patterns?.end_time}
                   </div>
-                  <div className="text-sm text-gray-500 mt-1">
+                  <div className="text-xs sm:text-sm text-gray-500">
                     {todayShift.stores?.name}
                   </div>
                 </div>
-                <div className="text-right">
-                  <div className={`px-3 py-1 rounded-full text-sm font-medium ${
+                <div className="text-right ml-3">
+                  <div className={`px-2 sm:px-3 py-1 rounded-full text-xs sm:text-sm font-medium ${
                     todayShift.status === 'confirmed' 
                       ? 'bg-green-100 text-green-800' 
                       : 'bg-yellow-100 text-yellow-800'
@@ -359,54 +355,55 @@ export default function StaffDashboardPage() {
                 </div>
               </div>
             ) : (
-              <div className="text-center py-8 text-gray-500">
-                <svg className="w-12 h-12 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="text-center py-6 sm:py-8 text-gray-500">
+                <svg className="w-10 h-10 sm:w-12 sm:h-12 mx-auto mb-3 sm:mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                <p>今日はお休みです</p>
+                <p className="text-sm sm:text-base">今日はお休みです</p>
               </div>
             )}
           </CardContent>
         </Card>
 
-        {/* 統計カード */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* 統計カード - モバイル最適化 */}
+        <div className="grid grid-cols-3 gap-3 sm:gap-6">
           <Card>
-            <CardContent className="pt-6">
-              <div className="text-2xl font-bold text-blue-600">
+            <CardContent className="pt-4 sm:pt-6 px-3 sm:px-6 pb-4 sm:pb-6">
+              <div className="text-xl sm:text-2xl font-bold text-blue-600">
                 {calculateWeeklyHours().toFixed(1)}
               </div>
-              <p className="text-sm text-gray-500 mt-1">今週の勤務時間</p>
+              <p className="text-xs sm:text-sm text-gray-500 mt-1">今週の勤務時間</p>
             </CardContent>
           </Card>
           <Card>
-            <CardContent className="pt-6">
-              <div className="text-2xl font-bold text-green-600">
+            <CardContent className="pt-4 sm:pt-6 px-3 sm:px-6 pb-4 sm:pb-6">
+              <div className="text-xl sm:text-2xl font-bold text-green-600">
                 {myRequests.filter(r => r.status === 'approved').length}
               </div>
-              <p className="text-sm text-gray-500 mt-1">承認済み希望休</p>
+              <p className="text-xs sm:text-sm text-gray-500 mt-1">承認済み希望休</p>
             </CardContent>
           </Card>
           <Card>
-            <CardContent className="pt-6">
-              <div className="text-2xl font-bold text-orange-600">
+            <CardContent className="pt-4 sm:pt-6 px-3 sm:px-6 pb-4 sm:pb-6">
+              <div className="text-xl sm:text-2xl font-bold text-orange-600">
                 {emergencyRequests.length}
               </div>
-              <p className="text-sm text-gray-500 mt-1">代打募集中</p>
+              <p className="text-xs sm:text-sm text-gray-500 mt-1">代打募集中</p>
             </CardContent>
           </Card>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* 希望休申請状況 */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-8">
+          {/* 希望休申請状況 - モバイル最適化 */}
           <Card>
-            <CardHeader>
+            <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <CardTitle>希望休申請状況</CardTitle>
+                <CardTitle className="text-lg sm:text-xl">希望休申請状況</CardTitle>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => router.push('/request-off')}
+                  className="text-xs sm:text-sm px-2 sm:px-3 py-1 sm:py-2 h-auto"
                 >
                   新規申請
                 </Button>
@@ -414,23 +411,23 @@ export default function StaffDashboardPage() {
             </CardHeader>
             <CardContent>
               {myRequests.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <p>申請履歴がありません</p>
+                <div className="text-center py-6 sm:py-8 text-gray-500">
+                  <p className="text-sm sm:text-base">申請履歴がありません</p>
                 </div>
               ) : (
                 <div className="space-y-3">
                   {myRequests.slice(0, 3).map((request) => (
-                    <div key={request.id} className="border border-gray-200 rounded-lg p-3">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="font-medium text-gray-900">
+                    <div key={request.id} className="border border-gray-200 rounded-lg p-3 sm:p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-gray-900 text-sm sm:text-base">
                             {new Date(request.date).toLocaleDateString('ja-JP')}
                           </p>
-                          <p className="text-sm text-gray-600 mt-1">
+                          <p className="text-xs sm:text-sm text-gray-600 mt-1 break-words">
                             {request.reason}
                           </p>
                         </div>
-                        <div className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        <div className={`px-2 py-1 rounded-full text-xs font-medium ml-2 flex-shrink-0 ${
                           request.status === 'approved' 
                             ? 'bg-green-100 text-green-800'
                             : request.status === 'rejected'
@@ -448,15 +445,15 @@ export default function StaffDashboardPage() {
             </CardContent>
           </Card>
 
-          {/* 代打募集 */}
+          {/* 代打募集 - モバイル最適化 */}
           <Card>
-            <CardHeader>
-              <CardTitle>代打募集</CardTitle>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg sm:text-xl">代打募集</CardTitle>
             </CardHeader>
             <CardContent>
               {emergencyRequests.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <p>現在、代打募集はありません</p>
+                <div className="text-center py-6 sm:py-8 text-gray-500">
+                  <p className="text-sm sm:text-base">現在、代打募集はありません</p>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -467,45 +464,52 @@ export default function StaffDashboardPage() {
                     const alreadyApplied = isAlreadyApplied(request);
                     
                     return (
-                      <div key={request.id} className={`border rounded-lg p-3 ${urgencyStyle}`}>
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
-                              <p className="font-medium text-gray-900">
+                      <div key={request.id} className={`border rounded-lg p-3 sm:p-4 ${urgencyStyle}`}>
+                        <div className="space-y-2">
+                          <div className="flex items-start justify-between">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="font-medium text-gray-900 text-sm sm:text-base">
                                 {new Date(request.date).toLocaleDateString('ja-JP', {
                                   month: 'short',
                                   day: 'numeric',
                                   weekday: 'short'
                                 })}
                               </p>
-                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${urgencyLabel.color}`}>
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${urgencyLabel.color} flex-shrink-0`}>
                                 {urgencyLabel.text}
                               </span>
                             </div>
-                            <p className="text-sm text-gray-600">
+                            <div className="ml-2 flex-shrink-0">
+                              {alreadyApplied ? (
+                                <div className="text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full">
+                                  応募済み
+                                </div>
+                              ) : hasShiftOnDate(request.date) ? (
+                                <div className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
+                                  シフト有り
+                                </div>
+                              ) : (
+                                <Button 
+                                  size="sm" 
+                                  onClick={() => handleApplyEmergency(request.id)}
+                                  disabled={applyingTo === request.id}
+                                  className="text-xs px-3 py-1 h-auto min-h-[32px] min-w-[60px]"
+                                >
+                                  {applyingTo === request.id ? '応募中...' : '参加'}
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-xs sm:text-sm text-gray-600">
                               {request.shift_patterns?.name} ({request.shift_patterns?.start_time} - {request.shift_patterns?.end_time})
                             </p>
-                            <p className="text-sm text-gray-500 mt-1">
+                            <p className="text-xs sm:text-sm text-gray-500">
                               {request.stores?.name}
                             </p>
-                            <p className="text-xs text-gray-400 mt-1">
+                            <p className="text-xs text-gray-400 break-words">
                               理由: {request.reason}
                             </p>
-                          </div>
-                          <div className="ml-3">
-                            {alreadyApplied ? (
-                              <div className="text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full">
-                                応募済み
-                              </div>
-                            ) : (
-                              <Button 
-                                size="sm" 
-                                onClick={() => handleApplyEmergency(request.id)}
-                                disabled={applyingTo === request.id}
-                              >
-                                {applyingTo === request.id ? '応募中...' : '参加'}
-                              </Button>
-                            )}
                           </div>
                         </div>
                       </div>

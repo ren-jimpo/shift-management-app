@@ -79,7 +79,7 @@ export async function POST(request: NextRequest) {
     // 代打募集がまだオープンか確認
     const { data: emergencyRequest } = await supabase
       .from('emergency_requests')
-      .select('status')
+      .select('status, date')
       .eq('id', emergency_request_id)
       .single();
 
@@ -87,6 +87,33 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'Emergency request is not available for volunteering' },
         { status: 400 }
+      );
+    }
+
+    // 応募者が同じ日に他のシフトを持っていないかチェック
+    const { data: existingShifts } = await supabase
+      .from('shifts')
+      .select(`
+        id,
+        store_id,
+        status,
+        stores(id, name)
+      `)
+      .eq('user_id', user_id)
+      .eq('date', emergencyRequest.date);
+
+    if (existingShifts && existingShifts.length > 0) {
+      const existingShift = existingShifts[0];
+      const storeData = existingShift.stores as { name?: string } | null;
+      
+      return NextResponse.json(
+        { 
+          error: `Cannot apply for this emergency request: You already have a ${existingShift.status} shift at ${storeData?.name || '不明な店舗'} on this date`,
+          conflictingStore: storeData?.name || '不明な店舗',
+          conflictingStoreId: existingShift.store_id,
+          conflictType: existingShift.status
+        },
+        { status: 409 }
       );
     }
 

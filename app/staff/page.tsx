@@ -671,23 +671,39 @@ export default function StaffPage() {
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         所属店舗 *
                       </label>
-                      <select 
-                        multiple 
-                        className="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent h-24"
-                        value={formData.stores}
-                        onChange={(e) => {
-                          const values = Array.from(e.target.selectedOptions, option => option.value);
-                          setFormData({...formData, stores: values});
-                        }}
-                        disabled={saving}
-                      >
+                      <div className="border border-gray-300 rounded-xl p-3 space-y-2">
                         {stores.map(store => (
-                          <option key={store.id} value={store.id}>
-                            {store.name}
-                          </option>
+                          <label key={store.id} className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-2 rounded-lg transition-colors">
+                            <input
+                              type="checkbox"
+                              checked={formData.stores.includes(store.id)}
+                              onChange={(e) => {
+                                const storeId = store.id;
+                                let newStores: string[];
+                                
+                                if (e.target.checked) {
+                                  // チェックされた場合、配列に追加
+                                  newStores = [...formData.stores, storeId];
+                                } else {
+                                  // チェックが外された場合、配列から削除
+                                  newStores = formData.stores.filter(id => id !== storeId);
+                                }
+                                
+                                setFormData({...formData, stores: newStores});
+                              }}
+                              disabled={saving}
+                              className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+                            />
+                            <span className="text-sm text-gray-700 font-medium">{store.name}</span>
+                          </label>
                         ))}
-                      </select>
-                      <p className="text-xs text-gray-500 mt-1">Ctrlキーを押しながら複数選択可能</p>
+                        {stores.length === 0 && (
+                          <p className="text-sm text-gray-500 py-2">店舗データを読み込み中...</p>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        複数の店舗を選択可能です（選択済み: {formData.stores.length}店舗）
+                      </p>
                     </div>
                   </div>
 

@@ -11,6 +11,10 @@
 - **Tailwind CSS** 4.x - ユーティリティファーストCSS
 - **clsx & tailwind-merge** - 条件付きクラス名の管理
 
+### バックエンド・外部サービス
+- **Resend** - メール送信サービス
+- **Next.js API Routes** - サーバーサイドAPI
+
 ### 開発環境
 - **ESLint** - コード品質管理
 - **PostCSS** - CSS後処理
@@ -24,6 +28,9 @@
 ```
 shift-management-app/
 ├── app/                      # Next.js App Router
+│   ├── api/                # APIエンドポイント
+│   │   ├── email/          # メール送信API
+│   │   └── email/test/     # メール送信テスト用
 │   ├── login/               # ログイン画面
 │   ├── dashboard/           # 店長向けダッシュボード
 │   ├── shift/create/        # シフト作成・編集
@@ -41,7 +48,10 @@ shift-management-app/
 ├── lib/                   # ユーティリティとデータ
 │   ├── types.ts          # TypeScript型定義
 │   ├── mockData.ts       # モックデータ
-│   └── utils.ts          # ユーティリティ関数
+│   ├── utils.ts          # ユーティリティ関数
+│   ├── email.ts          # メール送信機能
+│   ├── email-test.ts     # メール送信テスト機能
+│   └── api.ts            # API呼び出しヘルパー
 └── public/               # 静的ファイル
 ```
 
@@ -168,6 +178,62 @@ npm run dev
 - プッシュ通知
 - PDF出力機能
 - データのインポート・エクスポート
+
+## メール通知機能 ✅
+
+### 実装済みメール機能
+ResendのAPIを使用したメール送信機能が実装されています：
+
+- **シフト確定通知**: スタッフへのシフト確定お知らせ
+- **希望休申請回答**: 承認・拒否通知
+- **代打募集通知**: 緊急時の代打要請メール（一斉送信）
+- **今日のシフト通知**: 毎日0:00自動送信 🆕
+- **一般通知**: システムからのお知らせ
+
+### 🕐 自動メール送信機能 
+- **毎日0:00自動送信**: 確定したシフトがある日に、該当スタッフに今日のシフト通知
+- **バッチ処理**: メール送信制限を回避し、複数ユーザーに効率的に配信
+- **レート制限対策**: 5件ずつバッチ処理で送信制限を回避
+
+### 環境設定
+```bash
+# .env.local ファイル
+RESEND_API_KEY=your_resend_api_key
+NEXT_PUBLIC_APP_NAME=シフト管理システム
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+### メール送信テスト
+開発環境で以下のURLでメール送信をテストできます：
+```
+http://localhost:3000/api/email/test
+http://localhost:3000/api/test/daily-notifications  # 毎日のシフト通知テスト 🆕
+```
+
+### 自動送信のテスト方法
+```bash
+# 手動で今日のシフト通知をテスト
+curl http://localhost:3000/api/test/daily-notifications
+
+# Cron Job直接テスト
+curl -X POST http://localhost:3000/api/cron/daily-shift-notifications
+```
+
+### 使用方法
+```typescript
+import { 
+  sendShiftConfirmationNotification,
+  sendTimeOffResponseNotification,
+  sendEmergencyRequestNotification 
+} from '@/lib/api';
+
+// シフト確定通知の例
+await sendShiftConfirmationNotification(
+  'user@example.com',
+  'ユーザー名',
+  [{ date: '2024-12-30', storeName: '京橋店', ... }]
+);
+```
 
 ---
 

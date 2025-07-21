@@ -365,4 +365,131 @@ export const dateUtils = {
     const sunday = new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000);
     return dateUtils.formatDate(sunday);
   },
-}; 
+};
+
+// メール送信API用の型定義
+export interface EmailRequest {
+  type: 'basic' | 'shift-confirmation' | 'time-off-response' | 'emergency-request' | 'notification';
+  [key: string]: any;
+}
+
+/**
+ * メール送信
+ */
+export async function sendEmailNotification(emailData: EmailRequest) {
+  const response = await fetch('/api/email', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(emailData),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.message || 'Failed to send email');
+  }
+
+  return response.json();
+}
+
+/**
+ * シフト確定通知メールを送信
+ */
+export async function sendShiftConfirmationNotification(
+  userEmail: string,
+  userName: string,
+  shifts: Array<{
+    date: string;
+    storeName: string;
+    shiftPattern: string;
+    startTime: string;
+    endTime: string;
+  }>
+) {
+  return sendEmailNotification({
+    type: 'shift-confirmation',
+    userEmail,
+    userName,
+    shifts,
+  });
+}
+
+/**
+ * 希望休申請承認・拒否通知メールを送信
+ */
+export async function sendTimeOffResponseNotification(
+  userEmail: string,
+  userName: string,
+  requestDate: string,
+  status: 'approved' | 'rejected',
+  reason?: string
+) {
+  return sendEmailNotification({
+    type: 'time-off-response',
+    userEmail,
+    userName,
+    requestDate,
+    status,
+    reason,
+  });
+}
+
+/**
+ * 代打募集通知メールを送信
+ */
+export async function sendEmergencyRequestNotification(
+  userEmails: string[],
+  details: {
+    storeName: string;
+    date: string;
+    shiftPattern: string;
+    startTime: string;
+    endTime: string;
+    reason: string;
+  }
+) {
+  return sendEmailNotification({
+    type: 'emergency-request',
+    userEmails,
+    details,
+  });
+}
+
+/**
+ * 一般的な通知メールを送信
+ */
+export async function sendGeneralNotification(
+  userEmail: string,
+  userName: string,
+  title: string,
+  message: string
+) {
+  return sendEmailNotification({
+    type: 'notification',
+    userEmail,
+    userName,
+    title,
+    message,
+  });
+}
+
+/**
+ * 基本的なメール送信
+ */
+export async function sendBasicEmail(
+  to: string | string[],
+  subject: string,
+  html?: string,
+  text?: string,
+  from?: string
+) {
+  return sendEmailNotification({
+    type: 'basic',
+    to,
+    subject,
+    html,
+    text,
+    from,
+  });
+} 

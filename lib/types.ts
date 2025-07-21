@@ -64,4 +64,25 @@ export interface EmergencyRequest {
     userId: string;
     respondedAt: string;
   }[];
-} 
+}
+
+// Supabase用の型定義
+export interface UserStore {
+  store_id: string;
+  store?: Store;
+}
+
+export interface DatabaseUser {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: 'manager' | 'staff';
+  skill_level: 'training' | 'regular' | 'veteran';
+  memo?: string;
+  user_stores?: UserStore[];
+}
+
+// フォームイベント用の型定義
+export type FormEvent = React.FormEvent<HTMLFormElement>;
+export type ChangeEvent = React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>; 

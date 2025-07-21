@@ -88,28 +88,65 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 重複チェック（同じユーザー・日付）- 店舗情報も含めて取得
-    const { data: existingShift } = await supabase
+    // 重複チェック（同じユーザー・日付）- 確定済みシフトの優先度を考慮
+    const { data: existingShifts } = await supabase
       .from('shifts')
       .select(`
         id,
         store_id,
+        status,
         stores(id, name)
       `)
       .eq('user_id', user_id)
-      .eq('date', date)
-      .single();
+      .eq('date', date);
 
-    if (existingShift) {
-      const storeData = existingShift.stores as any;
-      return NextResponse.json(
-        { 
-          error: 'User already has a shift on this date',
-          conflictingStore: storeData?.name || '不明な店舗',
-          conflictingStoreId: existingShift.store_id
-        },
-        { status: 409 }
-      );
+    if (existingShifts && existingShifts.length > 0) {
+      // 確定済みシフトがある場合は完全に阻止
+      const confirmedShift = existingShifts.find(shift => shift.status === 'confirmed');
+      if (confirmedShift) {
+        const storeData = confirmedShift.stores as { name?: string } | null;
+        return NextResponse.json(
+          { 
+            error: 'Cannot create shift: User has a confirmed shift on this date',
+            conflictingStore: storeData?.name || '不明な店舗',
+            conflictingStoreId: confirmedShift.store_id,
+            conflictType: 'confirmed'
+          },
+          { status: 409 }
+        );
+      }
+
+      // 新規シフトが確定の場合、既存の下書きシフトを削除
+      if (status === 'confirmed') {
+        const draftShifts = existingShifts.filter(shift => shift.status === 'draft');
+        if (draftShifts.length > 0) {
+          // 下書きシフトを削除
+          const { error: deleteError } = await supabase
+            .from('shifts')
+            .delete()
+            .in('id', draftShifts.map(shift => shift.id));
+
+          if (deleteError) {
+            console.error('Error deleting draft shifts:', deleteError);
+            return NextResponse.json({ error: 'Failed to replace draft shifts' }, { status: 500 });
+          }
+
+          console.log(`Deleted ${draftShifts.length} draft shifts for user ${user_id} on ${date}`);
+        }
+      } else {
+        // 新規シフトが下書きの場合、既存の下書きシフトがあれば阻止
+        const draftShift = existingShifts[0];
+        const storeData = draftShift.stores as { name?: string } | null;
+        return NextResponse.json(
+          { 
+            error: 'Cannot create shift: User already has a shift on this date',
+            conflictingStore: storeData?.name || '不明な店舗',
+            conflictingStoreId: draftShift.store_id,
+            conflictType: 'draft'
+          },
+          { status: 409 }
+        );
+      }
     }
 
     const { data, error } = await supabase
@@ -150,6 +187,106 @@ export async function PUT(request: NextRequest) {
 
     if (!id) {
       return NextResponse.json({ error: 'Shift ID is required' }, { status: 400 });
+    }
+
+    // バリデーション
+    if (!user_id || !store_id || !date || !pattern_id) {
+      return NextResponse.json(
+        { error: 'Required fields: user_id, store_id, date, pattern_id' },
+        { status: 400 }
+      );
+    }
+
+    // 日付の妥当性チェック
+    const shiftDate = new Date(date);
+    if (isNaN(shiftDate.getTime())) {
+      return NextResponse.json(
+        { error: 'Invalid date format' },
+        { status: 400 }
+      );
+    }
+
+    // ステータスの有効性チェック
+    if (status && !['draft', 'confirmed', 'completed'].includes(status)) {
+      return NextResponse.json(
+        { error: 'Status must be "draft", "confirmed", or "completed"' },
+        { status: 400 }
+      );
+    }
+
+    // 現在のシフトを取得
+    const { data: currentShift, error: currentShiftError } = await supabase
+      .from('shifts')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (currentShiftError) {
+      return NextResponse.json({ error: 'Shift not found' }, { status: 404 });
+    }
+
+    // 重複チェック（ユーザー・日付・店舗が変更される場合）
+    if (currentShift.user_id !== user_id || currentShift.date !== date || currentShift.store_id !== store_id) {
+      const { data: conflictingShifts } = await supabase
+        .from('shifts')
+        .select(`
+          id,
+          store_id,
+          status,
+          stores(id, name)
+        `)
+        .eq('user_id', user_id)
+        .eq('date', date)
+        .neq('id', id); // 現在のシフトは除外
+
+      if (conflictingShifts && conflictingShifts.length > 0) {
+        // 確定済みシフトがある場合は完全に阻止
+        const confirmedConflict = conflictingShifts.find(shift => shift.status === 'confirmed');
+        if (confirmedConflict) {
+          const storeData = confirmedConflict.stores as { name?: string } | null;
+          return NextResponse.json(
+            { 
+              error: 'Cannot modify shift: User has a confirmed shift on this date',
+              conflictingStore: storeData?.name || '不明な店舗',
+              conflictingStoreId: confirmedConflict.store_id,
+              conflictType: 'confirmed'
+            },
+            { status: 409 }
+          );
+        }
+
+        // 更新シフトが確定の場合、既存の下書きシフトを削除
+        if (status === 'confirmed') {
+          const draftConflicts = conflictingShifts.filter(shift => shift.status === 'draft');
+          if (draftConflicts.length > 0) {
+            // 下書きシフトを削除
+            const { error: deleteError } = await supabase
+              .from('shifts')
+              .delete()
+              .in('id', draftConflicts.map(shift => shift.id));
+
+            if (deleteError) {
+              console.error('Error deleting conflicting draft shifts:', deleteError);
+              return NextResponse.json({ error: 'Failed to replace draft shifts' }, { status: 500 });
+            }
+
+            console.log(`Deleted ${draftConflicts.length} conflicting draft shifts for user ${user_id} on ${date}`);
+          }
+        } else {
+          // 更新シフトが下書きの場合、既存の下書きシフトがあれば阻止
+          const draftConflict = conflictingShifts[0];
+          const storeData = draftConflict.stores as { name?: string } | null;
+          return NextResponse.json(
+            { 
+              error: 'Cannot modify shift: User already has a shift on this date',
+              conflictingStore: storeData?.name || '不明な店舗',
+              conflictingStoreId: draftConflict.store_id,
+              conflictType: 'draft'
+            },
+            { status: 409 }
+          );
+        }
+      }
     }
 
     const { data, error } = await supabase
@@ -215,7 +352,7 @@ export async function DELETE(request: NextRequest) {
 export async function PATCH(request: NextRequest) {
   try {
     const body = await request.json();
-    const { store_id, week_start, week_end, status, action } = body;
+    const { store_id, week_start, week_end, status } = body;
 
     // バリデーション
     if (!store_id || !week_start || !status) {

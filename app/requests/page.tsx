@@ -257,6 +257,124 @@ export default function RequestsPage() {
     }
   };
 
+  // 一括承認処理
+  const handleBulkApprove = async (requestIds: string[]) => {
+    if (!currentUser) {
+      setError('ユーザー認証が必要です');
+      return;
+    }
+    
+    if (!confirm(`${requestIds.length}件の申請を一括承認してもよろしいですか？`)) return;
+
+    setProcessing('bulk-approve');
+    setError(null);
+
+    try {
+      const response = await fetch('/api/time-off-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          request_ids: requestIds,
+          status: 'approved',
+          responded_by: currentUser.id
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '一括承認に失敗しました');
+      }
+
+      const result = await response.json();
+      
+      // ローカル状態を更新
+      setRequests(requests.map(request => 
+        requestIds.includes(request.id)
+          ? {
+              ...request,
+              status: 'approved' as const,
+              respondedAt: new Date().toISOString(),
+              respondedBy: currentUser.id,
+              respondedByName: currentUser.name
+            }
+          : request
+      ));
+
+      alert(`${result.updated_count}件の申請を承認しました`);
+
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '一括承認に失敗しました');
+    } finally {
+      setProcessing(null);
+    }
+  };
+
+  // 一括却下処理
+  const handleBulkReject = async (requestIds: string[]) => {
+    if (!currentUser) {
+      setError('ユーザー認証が必要です');
+      return;
+    }
+    
+    if (!confirm(`${requestIds.length}件の申請を一括却下してもよろしいですか？`)) return;
+
+    setProcessing('bulk-reject');
+    setError(null);
+
+    try {
+      const response = await fetch('/api/time-off-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          request_ids: requestIds,
+          status: 'rejected',
+          responded_by: currentUser.id
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '一括却下に失敗しました');
+      }
+
+      const result = await response.json();
+      
+      // ローカル状態を更新
+      setRequests(requests.map(request => 
+        requestIds.includes(request.id)
+          ? {
+              ...request,
+              status: 'rejected' as const,
+              respondedAt: new Date().toISOString(),
+              respondedBy: currentUser.id,
+              respondedByName: currentUser.name
+            }
+          : request
+      ));
+
+      alert(`${result.updated_count}件の申請を却下しました`);
+
+    } catch (error) {
+      setError(error instanceof Error ? error.message : '一括却下に失敗しました');
+    } finally {
+      setProcessing(null);
+    }
+  };
+
+  // 日付ユーティリティ関数
+  const formatDate = (date: string) => {
+    return new Date(date).toLocaleDateString('ja-JP', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      weekday: 'short'
+    });
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'pending': return 'bg-yellow-100 text-yellow-800';
@@ -414,110 +532,209 @@ export default function RequestsPage() {
               </div>
             ) : (
               <div className="space-y-4">
-                {filteredRequests.map((request) => (
-                  <div key={request.id} className="border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center space-x-3 mb-2">
-                          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center text-white font-bold">
-                            {request.userName.charAt(0)}
-                          </div>
-                          <div>
-                            <h3 className="text-lg font-semibold text-gray-900">{request.userName}</h3>
-                            <p className="text-sm text-gray-500">
-                              申請日時: {new Date(request.createdAt).toLocaleDateString('ja-JP', {
-                                year: 'numeric',
-                                month: 'short',
-                                day: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}
-                            </p>
-                          </div>
-                        </div>
-                        
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                          <div>
-                            <p className="text-sm font-medium text-gray-700">希望休日</p>
-                            <p className="text-lg font-semibold text-gray-900">
-                              {new Date(request.date).toLocaleDateString('ja-JP', {
-                                year: 'numeric',
-                                month: 'long',
-                                day: 'numeric',
-                                weekday: 'short'
-                              })}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium text-gray-700">理由</p>
-                            <p className="text-gray-900">{request.reason}</p>
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium text-gray-700">ステータス</p>
-                            <span className={`inline-block px-3 py-1 text-sm font-medium rounded-full ${getStatusColor(request.status)}`}>
-                              {getStatusText(request.status)}
-                            </span>
-                          </div>
-                        </div>
+                {(() => {
+                  // 申請をグループ化（同じユーザー・同じ理由・同じ申請日）
+                  const groupedRequests = filteredRequests.reduce((groups, request) => {
+                    const key = `${request.userId}-${request.reason}-${new Date(request.createdAt).toISOString().split('T')[0]}`;
+                    if (!groups[key]) {
+                      groups[key] = [];
+                    }
+                    groups[key].push(request);
+                    return groups;
+                  }, {} as Record<string, DisplayTimeOffRequest[]>);
 
-                        {request.status !== 'pending' && request.respondedAt && (
-                          <div className="p-3 bg-gray-50 rounded-lg">
-                            <p className="text-sm text-gray-600">
-                              <span className="font-medium">{request.respondedByName || '管理者'}</span>により
-                              {new Date(request.respondedAt).toLocaleDateString('ja-JP', {
-                                year: 'numeric',
-                                month: 'short',
-                                day: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}に{getStatusText(request.status)}
-                            </p>
-                          </div>
-                        )}
-                      </div>
+                  return Object.values(groupedRequests)
+                    .sort((a, b) => new Date(b[0].createdAt).getTime() - new Date(a[0].createdAt).getTime())
+                    .map((group) => {
+                      const isMultipleDay = group.length > 1;
+                      const sortedGroup = group.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+                      const firstRequest = sortedGroup[0];
+                      const allSameStatus = group.every(r => r.status === firstRequest.status);
+                      const allPending = group.every(r => r.status === 'pending');
+                      const pendingRequests = group.filter(r => r.status === 'pending');
 
-                      {/* アクションボタン */}
-                      {request.status === 'pending' && (
-                        <div className="flex items-center space-x-2 ml-4">
-                          <Button
-                            size="sm"
-                            onClick={() => handleApprove(request.id)}
-                            className="bg-green-500 hover:bg-green-600"
-                            disabled={processing === request.id}
-                          >
-                            {processing === request.id ? (
-                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                            ) : (
-                              <>
-                                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                </svg>
-                                承認
-                              </>
+                      return (
+                        <div key={`group-${firstRequest.id}`} className="border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow">
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center space-x-3 mb-3">
+                                <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center text-white font-bold">
+                                  {firstRequest.userName.charAt(0)}
+                                </div>
+                                <div>
+                                  <div className="flex items-center space-x-2">
+                                    <h3 className="text-lg font-semibold text-gray-900">{firstRequest.userName}</h3>
+                                    {isMultipleDay && (
+                                      <span className="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
+                                        {group.length}日間
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-sm text-gray-500">
+                                    申請日時: {new Date(firstRequest.createdAt).toLocaleDateString('ja-JP', {
+                                      year: 'numeric',
+                                      month: 'short',
+                                      day: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}
+                                  </p>
+                                </div>
+                              </div>
+                              
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                                <div>
+                                  <p className="text-sm font-medium text-gray-700">希望休日</p>
+                                  {isMultipleDay ? (
+                                    <div>
+                                      <p className="text-lg font-semibold text-gray-900">
+                                        {formatDate(sortedGroup[0].date)} 〜 {formatDate(sortedGroup[sortedGroup.length - 1].date)}
+                                      </p>
+                                      <p className="text-sm text-gray-600">
+                                        計{group.length}日間
+                                      </p>
+                                    </div>
+                                  ) : (
+                                    <p className="text-lg font-semibold text-gray-900">
+                                      {formatDate(firstRequest.date)}
+                                    </p>
+                                  )}
+                                </div>
+                                <div>
+                                  <p className="text-sm font-medium text-gray-700">理由</p>
+                                  <p className="text-gray-900">{firstRequest.reason}</p>
+                                </div>
+                                <div>
+                                  <p className="text-sm font-medium text-gray-700">ステータス</p>
+                                  {allSameStatus ? (
+                                    <span className={`inline-block px-3 py-1 text-sm font-medium rounded-full ${getStatusColor(firstRequest.status)}`}>
+                                      {getStatusText(firstRequest.status)}
+                                    </span>
+                                  ) : (
+                                    <div className="space-y-1">
+                                      <span className="inline-block px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-600">
+                                        混在
+                                      </span>
+                                      <p className="text-xs text-gray-500">
+                                        保留中: {pendingRequests.length}件
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* 複数日の場合は個別日程も表示 */}
+                              {isMultipleDay && (
+                                <div className="mb-4 p-3 bg-gray-50 rounded-lg">
+                                  <p className="text-sm font-medium text-gray-700 mb-2">申請日程詳細</p>
+                                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                                    {sortedGroup.map((request) => (
+                                      <div key={request.id} className="flex items-center justify-between p-2 bg-white rounded border">
+                                        <span className="text-sm text-gray-600">
+                                          {new Date(request.date).toLocaleDateString('ja-JP', {
+                                            month: 'numeric',
+                                            day: 'numeric',
+                                            weekday: 'short'
+                                          })}
+                                        </span>
+                                        <span className={`px-1 py-0.5 text-xs font-medium rounded ${getStatusColor(request.status)}`}>
+                                          {getStatusText(request.status)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {firstRequest.status !== 'pending' && firstRequest.respondedAt && allSameStatus && (
+                                <div className="p-3 bg-gray-50 rounded-lg">
+                                  <p className="text-sm text-gray-600">
+                                    <span className="font-medium">{firstRequest.respondedByName || '管理者'}</span>により
+                                    {new Date(firstRequest.respondedAt).toLocaleDateString('ja-JP', {
+                                      year: 'numeric',
+                                      month: 'short',
+                                      day: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}に{getStatusText(firstRequest.status)}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* アクションボタン */}
+                            {pendingRequests.length > 0 && (
+                              <div className="flex flex-col space-y-2 ml-4">
+                                {/* 一括承認ボタン */}
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleBulkApprove(pendingRequests.map(r => r.id))}
+                                  className="bg-green-500 hover:bg-green-600"
+                                  disabled={processing === 'bulk-approve' || processing === 'bulk-reject'}
+                                >
+                                  {processing === 'bulk-approve' ? (
+                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                  ) : (
+                                    <>
+                                      <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                      </svg>
+                                      {pendingRequests.length > 1 ? `一括承認 (${pendingRequests.length})` : '承認'}
+                                    </>
+                                  )}
+                                </Button>
+                                
+                                {/* 一括却下ボタン */}
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => handleBulkReject(pendingRequests.map(r => r.id))}
+                                  disabled={processing === 'bulk-approve' || processing === 'bulk-reject'}
+                                >
+                                  {processing === 'bulk-reject' ? (
+                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                                  ) : (
+                                    <>
+                                      <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                      </svg>
+                                      {pendingRequests.length > 1 ? `一括却下 (${pendingRequests.length})` : '却下'}
+                                    </>
+                                  )}
+                                </Button>
+
+                                {/* 個別操作の場合は単一申請のみ表示 */}
+                                {!isMultipleDay && pendingRequests.length === 1 && (
+                                  <div className="pt-2 border-t border-gray-200">
+                                    <p className="text-xs text-gray-500 mb-2">個別操作:</p>
+                                    <div className="flex space-x-1">
+                                      <Button
+                                        size="sm"
+                                        onClick={() => handleApprove(pendingRequests[0].id)}
+                                        className="bg-green-500 hover:bg-green-600 text-xs px-2 py-1"
+                                        disabled={processing === pendingRequests[0].id}
+                                      >
+                                        承認
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="destructive"
+                                        onClick={() => handleReject(pendingRequests[0].id)}
+                                        className="text-xs px-2 py-1"
+                                        disabled={processing === pendingRequests[0].id}
+                                      >
+                                        却下
+                                      </Button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
                             )}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => handleReject(request.id)}
-                            disabled={processing === request.id}
-                          >
-                            {processing === request.id ? (
-                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                            ) : (
-                              <>
-                                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                                却下
-                              </>
-                            )}
-                          </Button>
+                          </div>
                         </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                      );
+                    });
+                })()}
               </div>
             )}
           </CardContent>
