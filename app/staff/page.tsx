@@ -574,8 +574,14 @@ export default function StaffPage() {
 
         {/* モーダル（スタッフ追加・編集） */}
         {isModalOpen && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+          <div 
+            className="fixed inset-0 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+            onClick={() => setIsModalOpen(false)}
+          >
+            <div 
+              className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className="p-6">
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-2xl font-bold text-gray-900">
@@ -749,8 +755,14 @@ export default function StaffPage() {
 
         {/* ログイン用ID表示モーダル */}
         {showLoginId && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+          <div 
+            className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50"
+            onClick={() => setShowLoginId(false)}
+          >
+            <div 
+              className="bg-white rounded-xl p-6 max-w-md w-full mx-4"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className="text-center">
                 <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-green-100 mb-4">
                   <svg className="h-6 w-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
