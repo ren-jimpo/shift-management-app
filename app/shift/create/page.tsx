@@ -1724,8 +1724,14 @@ function ShiftCreatePageInner() {
 
         {/* シフト追加モーダル */}
         {isModalOpen && modalData && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+          <div 
+            className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50"
+            onClick={() => setIsModalOpen(false)}
+          >
+            <div 
+              className="bg-white rounded-xl p-6 max-w-md w-full mx-4"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-gray-900">シフト追加</h3>
                 <button
@@ -1917,8 +1923,14 @@ function ShiftCreatePageInner() {
 
         {/* 代打募集モーダル */}
         {emergencyModal.show && emergencyModal.shift && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
+          <div 
+            className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50"
+            onClick={() => setEmergencyModal({ show: false, shift: null })}
+          >
+            <div 
+              className="bg-white rounded-xl p-6 max-w-md w-full mx-4"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-gray-900">代打募集</h3>
                 <button
@@ -1990,8 +2002,14 @@ function ShiftCreatePageInner() {
 
         {/* 応募者管理モーダル */}
         {emergencyManagement.show && emergencyManagement.request && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+          <div 
+            className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50"
+            onClick={() => setEmergencyManagement({ show: false, request: null })}
+          >
+            <div 
+              className="bg-white rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
               <div className="flex items-center justify-between mb-6">
                 <h3 className="text-xl font-semibold text-gray-900">代打募集管理</h3>
                 <button
@@ -2126,7 +2144,7 @@ function ShiftCreatePageInner() {
       </div>
     </AuthenticatedLayout>
   );
-}
+} 
 
 export default function ShiftCreatePage() {
   return (
